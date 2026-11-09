@@ -53,9 +53,18 @@ def test_guess_with_org_number_is_accepted():
 
 
 def test_email_domain_equal_to_name_is_accepted():
-    sites = {"gangstadbygg.no": site("https://gangstadbygg.no/", title="Velkommen")}
+    sites = {"gangstadbygg.no": site("https://gangstadbygg.no/", title="Velkommen", text="Vi bygger hus. " * 20)}
     found, _ = discover(PROFILE, "post@gangstadbygg.no", fetch=fake_fetch(sites), dns=lambda _: True)
     assert found is not None
+
+
+def test_parked_or_empty_email_domain_is_rejected_even_when_name_matches():
+    for sites in (
+        {"gangstadbygg.no": site("https://gangstadbygg.no/", title="gangstadbygg.no is parked", text="x" * 200)},
+        {"gangstadbygg.no": site("https://gangstadbygg.no/", title="", text="")},
+    ):
+        found, _ = discover(PROFILE, "post@gangstadbygg.no", fetch=fake_fetch(sites), dns=lambda _: True)
+        assert found is None
 
 
 def test_accountant_email_domain_is_rejected_even_at_the_same_address():
@@ -115,3 +124,11 @@ def test_refresh_is_idempotent_and_keeps_evidence_on_change():
     changed = apply_previous({"claims": [{"field": "a", "value": 2, "availability": "available"}], "run_id": "r2"}, {"claims": claims, "run_id": "r1", "evidence": [{"id": "ev-1"}]})
     assert changed["changes"][0]["type"] == "changed"
     assert changed["prior_evidence"][0]["id"] == "ev-1@r1"
+
+
+def test_workplace_diff_uses_a_stable_key_and_ignores_empty_new_fields():
+    old = [{"field": "registered_workplace", "availability": "available", "value": {"organisation_number": "1", "name": "A"}}]
+    same = [{"field": "registered_workplace", "availability": "available", "value": {"organisation_number": "1", "name": "A", "website": None}}]
+    renamed = [{"field": "registered_workplace", "availability": "available", "value": {"organisation_number": "1", "name": "B"}}]
+    assert diff(same, old) == []
+    assert [c["type"] for c in diff(renamed, old)] == ["changed"]

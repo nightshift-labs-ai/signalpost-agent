@@ -25,7 +25,8 @@ WEBMAIL = {
     "gmx.com", "gmx.net", "mail.com", "tussa.com", "sensewave.no", "vikenfiber.no", "tdc.no", "loqal.no", "skynet.no",
     "regnskapnorge.no", "accountor.no",
 }
-MAX_NAME_CANDIDATES = 4
+MAX_NAME_CANDIDATES = 6
+TRADE_WORDS = {"holding", "invest", "investering", "eiendom", "eiendommer", "gruppen", "consult", "consulting", "konsult", "drift", "service", "services", "firma", "arkitektfirma", "regnskap", "bygg", "transport", "elektro", "maskin", "entreprenor"}
 
 
 def _ascii_tokens(name: str) -> list[str]:
@@ -52,6 +53,9 @@ def name_candidates(name: str) -> list[str]:
         candidates += [f"{joined}.no", f"{joined}.com"]
     if len(tokens) >= 2:
         candidates += ["-".join(tokens) + ".no", "".join(tokens[:2]) + ".no"]
+    core = [token for token in tokens if token not in TRADE_WORDS]
+    if core and len("".join(core)) >= 5 and core != tokens:
+        candidates += ["".join(core) + ".no", "".join(core) + "as.no"]
     return list(dict.fromkeys(candidates))[:MAX_NAME_CANDIDATES]
 
 
@@ -71,6 +75,7 @@ def _org_number_proven(website: dict[str, Any], org: str) -> bool:
 def discover(
     profile: dict[str, Any],
     registered_email: Any,
+    subunit_sites: list[str] | None = None,
     fetch: Callable[..., tuple[dict[str, Any], dict[str, Any]]] = fetch_website,
     dns: Callable[[str], bool] = resolves,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -78,7 +83,8 @@ def discover(
     org = re.sub(r"\D", "", str(profile.get("organisation_number") or ""))
     metrics: dict[str, Any] = {"requests": 0, "bytes": 0, "latencies_ms": [], "candidates": []}
     domain = email_domain(registered_email)
-    ordered = ([("registered_email_domain", domain)] if domain else []) + [("legal_name_guess", item) for item in name_candidates(str(profile.get("name") or ""))]
+    subunit_domains = [re.sub(r"^https?://", "", item.strip().casefold()).split("/")[0].removeprefix("www.") for item in (subunit_sites or []) if item and item.strip()]
+    ordered = ([("registered_email_domain", domain)] if domain else []) + [("registered_subunit_website", item) for item in dict.fromkeys(subunit_domains)][:2] + [("legal_name_guess", item) for item in name_candidates(str(profile.get("name") or ""))]
     tried: set[str] = set()
     for origin, candidate in ordered:
         if candidate in tried:
@@ -99,9 +105,12 @@ def discover(
         proven = _org_number_proven(gated, org)
         address = bool((gated.get("value") or {}).get("registered_address_found_at"))
         all_name_tokens = float(assessment.get("score") or 0) >= 0.95
-        if origin == "registered_email_domain":
+        if origin in {"registered_email_domain", "registered_subunit_website"}:
             label = candidate.split(".")[0].replace("-", "")
-            name_is_domain = label == "".join(_ascii_tokens(str(profile.get("name") or "")))
+            value = gated.get("value") or {}
+            substantive = len(str(value.get("main_text_excerpt") or "").strip()) >= 100
+            parked = any("parked" in str(reason) for reason in assessment.get("reasons") or [])
+            name_is_domain = substantive and not parked and label == "".join(_ascii_tokens(str(profile.get("name") or "")))
             accepted = proven or name_is_domain or bool(assessment.get("publishable"))  # address alone is not enough: holding companies often register c/o their accountant, whose email domain this may be
         else:
             accepted = proven or (address and all_name_tokens)

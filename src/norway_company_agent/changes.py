@@ -12,10 +12,23 @@ from typing import Any
 UNCERTAIN = {"failed", "blocked", "ambiguous"}
 
 
+def _stable(value: Any) -> Any:
+    """Drop empty keys so a schema addition with no data is not reported as a change."""
+    if isinstance(value, dict):
+        return {key: _stable(item) for key, item in value.items() if item not in (None, "", [], {})}
+    return value
+
+
 def _key(claim: dict[str, Any]) -> str:
     value = claim.get("value")
-    if claim["field"] in {"leadership.role", "registered_workplace", "hiring.job_posting", "public_activity.dated_item"} and isinstance(value, dict):
-        return claim["field"] + "|" + json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if isinstance(value, dict):
+        if claim["field"] == "registered_workplace" and value.get("organisation_number"):
+            return claim["field"] + "|" + str(value["organisation_number"])
+        if claim["field"] == "leadership.role":
+            return claim["field"] + "|" + "|".join(str(value.get(part)) for part in ("name", "role_code"))
+        if claim["field"] in {"hiring.job_posting", "public_activity.dated_item"}:
+            return claim["field"] + "|" + str(value.get("posting_url") or value.get("url") or value.get("title"))
+        return claim["field"] + "|" + json.dumps(_stable(value), ensure_ascii=False, sort_keys=True)
     period = claim.get("reporting_period") or {}
     return claim["field"] + ("|" + json.dumps(period, sort_keys=True) if period else "")
 
@@ -31,7 +44,7 @@ def diff(current: list[dict[str, Any]], previous: list[dict[str, Any]]) -> list[
     for key in sorted(set(new) | set(old)):
         before, after = old.get(key), new.get(key)
         if before and after:
-            if before.get("value") != after.get("value"):
+            if _stable(before.get("value")) != _stable(after.get("value")):
                 changes.append({"type": "changed", "field": after["field"], "previous": before["value"], "current": after["value"], "evidence_ids": after.get("evidence_ids"), "previous_evidence_ids": before.get("evidence_ids")})
         elif after:
             changes.append({"type": "added", "field": after["field"], "current": after["value"], "evidence_ids": after.get("evidence_ids")})

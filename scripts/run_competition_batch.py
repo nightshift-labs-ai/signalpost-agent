@@ -75,7 +75,7 @@ def main() -> None:
             profile["evidence"]["website"] = gated
             publishable = ((gated.get("value") or {}).get("identity_assessment") or {}).get("publishable")
             if not publishable:
-                found, discovery_metrics = discover(profile, live.get("email"), fetch=lambda url: fetch_website(url, org=org, hints=hints))
+                found, discovery_metrics = discover(profile, live.get("email"), subunit_sites=[item.get("website") for item in ((profile["evidence"].get("locations") or {}).get("value") or {}).get("locations", []) if item.get("website")], fetch=lambda url: fetch_website(url, org=org, hints=hints))
                 website_metrics["requests"] += discovery_metrics["requests"]
                 website_metrics["bytes"] += discovery_metrics["bytes"]
                 website_metrics["latencies_ms"] += discovery_metrics["latencies_ms"]

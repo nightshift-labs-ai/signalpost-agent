@@ -22,6 +22,10 @@ No API key, no model, no paid service: `third_party_cost_usd` is 0. Add `--previ
 - **Evidence from company pages** (`website.py`). Up to 8 priority pages, schema.org JobPosting, page-stated dates, with hash and source for each.
 - **Refresh as a diff** (`changes.py`). Stable claim keys, prior evidence carried forward, idempotent, and a failed refresh is never reported as a removal.
 
+## Browse the results
+
+`python scripts/build_site.py --envelopes out/envelopes.jsonl --output site/index.html` builds one static page, for phone and desktop: find a company, compare two side by side, and open the source of any fact.
+
 ## Limits, stated plainly
 
 Prefers missing a fact over publishing one for the wrong company, so coverage of small companies with no web presence is low. It does not access LinkedIn, Meta, Glassdoor, Indeed or Google; job and activity coverage comes only from the company's own site. robots.txt is respected.

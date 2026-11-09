@@ -73,7 +73,7 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     ratio = len(overlap) / len(set(core)) if core else 0.0
     reasons = []
     parked_markers = (
-        "domain is for sale", "domain for sale", "hugedomains", "parked at", "miss hosting",
+        "domain is for sale", "domain for sale", "hugedomains", "parked at", "is parked", "parkert", "domene til salgs", "miss hosting",
         "her flytter snart en ny gjest", "has been informing visitors",
         "find the best information and most relevant links on all topics related to",
     )
