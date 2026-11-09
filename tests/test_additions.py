@@ -649,3 +649,11 @@ def test_redirect_to_a_sister_company_is_not_this_companys_site() -> None:
     profile = {"organisation_number": ORG, "name": "PREMIUM WINES AS", "evidence": {}}
     found, _ = discover(profile, None, fetch=fetched, dns=lambda domain: domain == "premiumwines.no")
     assert found is None
+
+
+def test_redirect_with_only_a_leader_name_is_not_enough() -> None:
+    def fetched(domain: str) -> tuple[dict, dict]:
+        return {"status": "available", "value": {"final_url": "https://www.annetfirma.no/", "title": "Hjem", "description": "", "main_text_excerpt": "Daglig leder Kari Fjellheim driver emballasje. " * 6, "pages": [], "social_links": []}}, {"requests": 1, "bytes": 10, "latencies_ms": [5]}
+
+    found, _ = discover(_profile_with_leader(), None, fetch=fetched, dns=lambda domain: domain == "gangstadbygg.no")
+    assert found is None

@@ -173,7 +173,11 @@ def discover(
         final_domain = _registered_domain(final_url) if final_url else candidate
         redirected = final_domain != _registered_domain("https://" + candidate)
         if accepted and redirected and not (proven or all_name_tokens):
-            accepted = False  # the page we landed on must itself name this company; a shared address or leader only shows the two are related
+            # A company's domain may point to its trading brand, but a sister company's page looks the same: a person's name alone is not enough,
+            # and a landing page whose title names another legal entity is that entity's page.
+            names_other_entity = bool(re.search(r"\b(?:AS|ASA)\b", str((gated.get("value") or {}).get("title") or "")))
+            if not (address or phone) or names_other_entity:
+                accepted = False
         if accepted and not proven and re.search(r"\bholding\b", _fold(str(profile.get("name") or ""))):
             accepted = False  # a holding company shares its name and address with the operating company whose site this usually is
         if accepted and not proven and not final_domain.endswith(".no"):
