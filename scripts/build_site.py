@@ -68,7 +68,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 16px 24px;font-size:13px;color:v
 #cmp tr{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);border-top:1px solid var(--line)}
 #cmp thead th:first-child{display:none}
 #cmp thead th{overflow-wrap:anywhere;border:0}
-#cmp tbody td{border:0;min-width:0;white-space:normal;text-align:left}
+#cmp tbody td{border:0;min-width:0;white-space:normal;text-align:left;overflow-wrap:anywhere}
 #cmp tbody td:first-child{grid-column:1/-1;padding-bottom:0;font-size:13px}
 #cmp .scroll{overflow:visible}}
 </style>
