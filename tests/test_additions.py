@@ -132,3 +132,12 @@ def test_workplace_diff_uses_a_stable_key_and_ignores_empty_new_fields():
     renamed = [{"field": "registered_workplace", "availability": "available", "value": {"organisation_number": "1", "name": "B"}}]
     assert diff(same, old) == []
     assert [c["type"] for c in diff(renamed, old)] == ["changed"]
+
+
+def test_international_domain_needs_the_organisation_number():
+    profile = {"organisation_number": ORG, "name": "SMITH NEPHEW AS", "evidence": {}}
+    text = "Smith Nephew medical devices. " * 10
+    found, metrics = discover(profile, "post@smith-nephew.com", fetch=fake_fetch({"smith-nephew.com": site("https://www.smith-nephew.com/", title="Smith Nephew", text=text)}), dns=lambda domain: domain == "smith-nephew.com")
+    assert found is None and metrics["candidates"][0]["outcome"] == "rejected_identity"
+    found, _ = discover(profile, "post@smith-nephew.com", fetch=fake_fetch({"smith-nephew.com": site("https://www.smith-nephew.com/", title="Smith Nephew", text=text, org_found=True)}), dns=lambda domain: domain == "smith-nephew.com")
+    assert found is not None

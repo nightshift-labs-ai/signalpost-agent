@@ -5,7 +5,7 @@ derived from the legal name. A candidate is a guess until the fetched site prove
 requires the exact organisation number on the site; or, for the registered-email domain, a domain
 label equal to the joined legal-name tokens or all legal-name tokens (a matching address is not enough there: the domain may belong to the company's
 accountant); or, for a name-derived domain, the registered address together with all legal-name
-tokens. Search rank is never evidence.
+tokens. A domain outside .no always needs the organisation number: it is often the foreign parent's. Search rank is never evidence.
 """
 from __future__ import annotations
 
@@ -114,6 +114,8 @@ def discover(
             accepted = proven or name_is_domain or bool(assessment.get("publishable"))  # address alone is not enough: holding companies often register c/o their accountant, whose email domain this may be
         else:
             accepted = proven or (address and all_name_tokens)
+        if accepted and not proven and not candidate.endswith(".no"):
+            accepted = False  # an international domain is often the foreign parent's site: only the exact org number counts
         metrics["candidates"].append({"domain": candidate, "origin": origin, "outcome": "accepted" if accepted else "rejected_identity", "org_number_on_site": proven, "registered_address_on_site": address, "identity_score": assessment.get("score")})
         if accepted:
             value = gated["value"]
