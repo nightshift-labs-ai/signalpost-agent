@@ -657,3 +657,14 @@ def test_redirect_with_only_a_leader_name_is_not_enough() -> None:
 
     found, _ = discover(_profile_with_leader(), None, fetch=fetched, dns=lambda domain: domain == "gangstadbygg.no")
     assert found is None
+
+
+def test_product_codes_and_shop_blog_indexes_stay_out_of_activity() -> None:
+    import re
+    from norway_company_agent.claims import _is_product_code
+    from norway_company_agent.website import NOT_NEWS_PATH
+    assert _is_product_code("750P201T127") and _is_product_code("750p201t127")
+    assert not _is_product_code("2026") and not _is_product_code("Nyheter")
+    assert NOT_NEWS_PATH.search("/blogs/nyheter-hold-deg-oppdatert")
+    assert not NOT_NEWS_PATH.search("/blogs/nyheter/en-artikkel")
+    assert re.fullmatch(r"(?=\S*\d)(?=\S*[^\W\d_])\S+", "1350m301t150") and not re.fullmatch(r"(?=\S*\d)(?=\S*[^\W\d_])\S+", "nyhet 2026")

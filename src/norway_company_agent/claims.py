@@ -206,7 +206,7 @@ def _is_article_page(page: dict[str, Any]) -> bool:
 def _is_product_code(title: Any) -> bool:
     """A shop's product feed gives titles such as 750P201T127: dated, but not activity anyone would call news."""
     text = str(title or "").strip()
-    return bool(text) and " " not in text and any(ch.isdigit() for ch in text) and text.upper() == text
+    return bool(text) and " " not in text and any(ch.isdigit() for ch in text) and any(ch.isalpha() for ch in text)
 
 
 def _financial_sentences(claims: list[dict[str, Any]]) -> list[str]:

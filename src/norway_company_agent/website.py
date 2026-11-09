@@ -198,7 +198,7 @@ def _looks_like_job_title(text: str) -> bool:
     return 1 <= len(words) <= 8 and len(text) <= 90 and text[-1] not in ".!?:;," and not NOT_A_TITLE_START.match(text) and not NOT_A_TITLE_WORD.search(text) and bool(JOB_TITLE_WORD.search(text))
 
 
-NOT_NEWS_PATH = re.compile(r"/(?:portfolio|portefolje|referanser?|prosjekter|products?|produkter?|shop|butikk)(?:/|$)", re.I)
+NOT_NEWS_PATH = re.compile(r"/(?:portfolio|portefolje|referanser?|prosjekter|products?|produkter?|shop|butikk)(?:/|$)|^/blogs/[^/]+/?$", re.I)
 
 
 def _no_xml_declaration(html: str) -> str:
@@ -357,7 +357,7 @@ def sitemap_items(home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
             continue
         if depth >= 2 and (kind == "jobs" or JOB_PATH.search(path)) and _is_job_link(title, path) and len(result["jobs"]) < MAX_SITEMAP_ITEMS:
             result["jobs"].append({"title": title, "date_posted": None, "valid_through": None, "source_url": source, "posting_url": url, "sitemap_lastmod": lastmod, "date_basis": basis})
-        elif lastmod and depth >= 1 and (kind == "news" or (depth >= 2 and NEWS_PATH.search(path))) and not NOT_NEWS_PATH.search(path) and len(result["news"]) < MAX_SITEMAP_ITEMS:
+        elif lastmod and depth >= 1 and (kind == "news" or (depth >= 2 and NEWS_PATH.search(path))) and not NOT_NEWS_PATH.search(path) and not re.fullmatch(r"(?=\S*\d)(?=\S*[^\W\d_])\S+", title) and len(result["news"]) < MAX_SITEMAP_ITEMS:
             result["news"].append({"title": title, "url": url, "date": lastmod, "source_url": source, "date_basis": basis})
     return result
 
