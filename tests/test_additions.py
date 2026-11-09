@@ -615,3 +615,13 @@ def test_summary_uses_the_companys_own_latest_accounts_and_labels_group_figures(
     mixed = [fact("financials.revenue", 900.0, "2023-12-31", "KONSERN"), fact("financials.annual_result", -5.0, "2025-12-31", "SELSKAP")]
     assert _financial_sentences(mixed)[0].startswith("The filed annual result for the period ending 2025-12-31 was -5 NOK")
     assert _financial_sentences([fact("financials.revenue", 900.0, "2023-12-31", "KONSERN")])[0].startswith("Filed group revenue for the period ending 2023-12-31")
+
+
+def test_holding_company_needs_the_exact_organisation_number() -> None:
+    def fetched(domain: str) -> tuple[dict, dict]:
+        return {"status": "available", "value": {"final_url": "https://cosma.no/", "title": "Cosma", "description": "", "main_text_excerpt": "Cosma hjelper virksomheter med HR. " * 10, "pages": [], "social_links": [], "registered_address_found_at": "https://cosma.no/kontakt"}}, {"requests": 1, "bytes": 10, "latencies_ms": [5]}
+
+    profile = {"organisation_number": ORG, "name": "COSMA HOLDING AS", "evidence": {}}
+    found, metrics = discover(profile, None, fetch=fetched, dns=lambda domain: domain == "cosma.no")
+    assert found is None
+    assert any(item.get("outcome") == "rejected_identity" for item in metrics["candidates"])

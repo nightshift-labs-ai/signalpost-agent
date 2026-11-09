@@ -174,6 +174,8 @@ def discover(
         redirected = final_domain != _registered_domain("https://" + candidate)
         if accepted and redirected and not (proven or address or phone or leader):
             accepted = False  # the page we landed on must itself name this company; a domain match on the way there says nothing
+        if accepted and not proven and re.search(r"\bholding\b", _fold(str(profile.get("name") or ""))):
+            accepted = False  # a holding company shares its name and address with the operating company whose site this usually is
         if accepted and not proven and not final_domain.endswith(".no"):
             accepted = False  # an international domain is often the foreign parent's site: only the exact org number counts
         metrics["candidates"].append({"domain": candidate, "origin": origin, "outcome": "accepted" if accepted else "rejected_identity", "org_number_on_site": proven, "registered_address_on_site": address, "registered_phone_on_site": phone, "registered_leader_on_site": leader, "identity_score": assessment.get("score")})
