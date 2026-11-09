@@ -588,3 +588,30 @@ def test_site_describes_a_change_instead_of_only_naming_the_field() -> None:
     envelope = _site_envelope()
     envelope["changes"] = [{"type": "changed", "field": "financials.revenue", "previous": 100.0, "current": 200.0}, {"type": "removed", "field": "official_website", "previous": "https://a.no/"}]
     assert builder.row(envelope)["changes"] == ["Changed: financials revenue: 100 \u2192 200", "No longer found: official website: https://a.no/"]
+
+
+def _profile_with_leader(name: str = "Kari Fjellheim", code: str = "DAGL", organisation: str | None = None) -> dict:
+    return {"organisation_number": ORG, "name": "GANGSTAD BYGG AS", "evidence": {"roles": {"value": {"roles": [{"name": name, "role_code": code, "organisation_number": organisation, "inactive": False}]}}}}
+
+
+def test_leader_named_on_site_counts_only_in_full_and_with_the_right_role() -> None:
+    from norway_company_agent.discover_site import _leader_on_site
+    value = {"title": "Kontakt", "main_text_excerpt": "Daglig leder: Kari Marie Fjellheim, telefon", "pages": [{"main_text_excerpt": "Vår leder heter Fjellheimsen"}]}
+    assert _leader_on_site(_profile_with_leader("Kari Marie Fjellheim"), value)
+    assert _leader_on_site(_profile_with_leader("Kari Marie Fjellheim"), {"main_text_excerpt": "kontakt Kari Fjellheim i dag"})
+    assert not _leader_on_site(_profile_with_leader("Kari Marie Fjellheim"), {"main_text_excerpt": "Fjellheim er en fin plass, spor Kari"})
+    assert not _leader_on_site(_profile_with_leader("Kari Fjellheim", code="REVI"), value)  # an auditor is not the company's own leader
+    assert not _leader_on_site(_profile_with_leader("Kari Fjellheim", organisation="123456789"), value)  # role held by a company, not a person
+    assert not _leader_on_site(_profile_with_leader("Ole Li"), {"main_text_excerpt": "Ole Li"})  # too short to prove anything
+    assert not _leader_on_site(_profile_with_leader("Kari Fjell"), {"main_text_excerpt": "Kari Fjellheim"})  # a name inside a longer word is not a match
+
+
+def test_summary_uses_the_companys_own_latest_accounts_and_labels_group_figures() -> None:
+    from norway_company_agent.claims import _financial_sentences
+
+    def fact(field: str, value: float, end: str, kind: str) -> dict:
+        return {"field": field, "value": value, "availability": "available", "currency": "NOK", "reporting_period": {"fraDato": end[:4] + "-01-01", "tilDato": end}, "account_type": kind}
+
+    mixed = [fact("financials.revenue", 900.0, "2023-12-31", "KONSERN"), fact("financials.annual_result", -5.0, "2025-12-31", "SELSKAP")]
+    assert _financial_sentences(mixed)[0].startswith("The filed annual result for the period ending 2025-12-31 was -5 NOK")
+    assert _financial_sentences([fact("financials.revenue", 900.0, "2023-12-31", "KONSERN")])[0].startswith("Filed group revenue for the period ending 2023-12-31")

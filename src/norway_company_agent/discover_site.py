@@ -2,7 +2,7 @@
 
 Candidates come only from registry data: the domain of the registered email address, then domains
 derived from the legal name. A candidate is a guess until the fetched site proves it: publication
-requires the exact organisation number on the site; or the registered phone number together with all legal-name tokens; or, for the registered-email domain, a domain
+requires the exact organisation number on the site; or the registered phone number, or the registered daily manager or board chair named in full, together with all legal-name tokens or a domain equal to the legal name; or, for the registered-email domain, a domain
 label equal to the joined legal-name tokens or all legal-name tokens (a matching address is not enough there: the domain may belong to the company's
 accountant); or, for a name-derived domain, the registered address together with all legal-name
 tokens. A domain outside .no always needs the organisation number: it is often the foreign parent's. Search rank is never evidence.
@@ -18,7 +18,7 @@ import urllib.parse
 from typing import Any, Callable
 
 from .identity import LEGAL_AND_GENERIC, _tokens, apply_website_identity_gate
-from .website import _registered_domain, fetch_website
+from .website import _fold, _registered_domain, fetch_website
 
 WEBMAIL = {
     "gmail.com", "googlemail.com", "hotmail.com", "hotmail.no", "outlook.com", "outlook.no", "live.com", "live.no",
@@ -101,6 +101,22 @@ def _org_number_proven(website: dict[str, Any], org: str) -> bool:
     return bool(value.get("org_number_found_at")) and org == re.sub(r"\D", "", str(value.get("org_number_found") or ""))
 
 
+def _leader_on_site(profile: dict[str, Any], value: dict[str, Any]) -> bool:
+    """True when the registered daily manager or board chair is named in full on the site's own pages."""
+    roles = ((profile.get("evidence") or {}).get("roles") or {}).get("value") or {}
+    names = {str(role.get("name") or "") for role in roles.get("roles") or [] if role.get("role_code") in {"DAGL", "LEDE"} and not role.get("organisation_number") and not role.get("inactive")}
+    pages = [value.get("title"), value.get("description"), value.get("main_text_excerpt"), *[page.get("main_text_excerpt") for page in value.get("pages") or []]]
+    text = " ".join(_fold(str(page)) for page in pages if page)
+    for name in names:
+        parts = re.findall(r"[a-z0-9]+", _fold(name))
+        if len(parts) < 2 or len("".join(parts)) < 8:
+            continue  # a short name is too likely to appear by chance
+        for form in {" ".join(parts), f"{parts[0]} {parts[-1]}"}:
+            if re.search(rf"(?<![a-z0-9]){re.escape(form)}(?![a-z0-9])", text):
+                return True
+    return False
+
+
 def discover(
     profile: dict[str, Any],
     registered_email: Any,
@@ -140,6 +156,7 @@ def discover(
         proven = _org_number_proven(gated, org)
         address = bool((gated.get("value") or {}).get("registered_address_found_at"))
         phone = bool((gated.get("value") or {}).get("registered_phone_found_at"))
+        leader = _leader_on_site(profile, gated.get("value") or {})
         all_name_tokens = float(assessment.get("score") or 0) >= 0.95
         name_is_label = candidate.split(".")[0].replace("-", "") == "".join(_ascii_tokens(str(profile.get("name") or "")))
         if origin in {"registered_email_domain", "registered_subunit_website", "wikidata_official_website"}:
@@ -149,20 +166,20 @@ def discover(
             page_words = set(_tokens(" ".join(str(value.get(key) or "") for key in ("title", "description", "main_text_excerpt"))))
             name_on_page = any(len(token) >= 4 and token in page_words for token in _tokens(profile.get("name")))
             name_is_domain = substantive and not parked and name_is_label and name_on_page
-            accepted = proven or name_is_domain or bool(assessment.get("publishable")) or (phone and (all_name_tokens or name_is_label)) or (address and name_is_label)  # address alone is not enough: holding companies often register c/o their accountant, whose email domain this may be
+            accepted = proven or name_is_domain or bool(assessment.get("publishable")) or ((phone or leader) and (all_name_tokens or name_is_label)) or (address and name_is_label)  # address alone is not enough: holding companies often register c/o their accountant, whose email domain this may be
         else:
-            accepted = proven or ((address or phone) and (all_name_tokens or name_is_label))
+            accepted = proven or ((address or phone or leader) and (all_name_tokens or name_is_label))
         final_url = str((gated.get("value") or {}).get("final_url") or "")
         final_domain = _registered_domain(final_url) if final_url else candidate
         redirected = final_domain != _registered_domain("https://" + candidate)
-        if accepted and redirected and not (proven or address or phone):
+        if accepted and redirected and not (proven or address or phone or leader):
             accepted = False  # the page we landed on must itself name this company; a domain match on the way there says nothing
         if accepted and not proven and not final_domain.endswith(".no"):
             accepted = False  # an international domain is often the foreign parent's site: only the exact org number counts
-        metrics["candidates"].append({"domain": candidate, "origin": origin, "outcome": "accepted" if accepted else "rejected_identity", "org_number_on_site": proven, "registered_address_on_site": address, "registered_phone_on_site": phone, "identity_score": assessment.get("score")})
+        metrics["candidates"].append({"domain": candidate, "origin": origin, "outcome": "accepted" if accepted else "rejected_identity", "org_number_on_site": proven, "registered_address_on_site": address, "registered_phone_on_site": phone, "registered_leader_on_site": leader, "identity_score": assessment.get("score")})
         if accepted:
             value = gated["value"]
-            value["discovery"] = {"origin": origin, "candidate": candidate, "org_number_on_site": proven, "registered_address_on_site": address, "registered_phone_on_site": phone, "method": "registry_derived_candidate_v3"}
+            value["discovery"] = {"origin": origin, "candidate": candidate, "org_number_on_site": proven, "registered_address_on_site": address, "registered_phone_on_site": phone, "registered_leader_on_site": leader, "method": "registry_derived_candidate_v3"}
             basis = []
             if proven:
                 basis.append("the exact organisation number appears on the site")
@@ -170,6 +187,8 @@ def discover(
                 basis.append("the registered business address appears on the site")
             if phone:
                 basis.append("a registered phone number appears on the site")
+            if leader:
+                basis.append("the registered daily manager or board chair is named on the site")
             if name_is_label:
                 basis.append(f"the domain {candidate} equals the legal name")
             elif all_name_tokens:

@@ -199,18 +199,21 @@ def _financial_sentences(claims: list[dict[str, Any]]) -> list[str]:
 
     revenue = by_period("financials.revenue")
     results = by_period("financials.annual_result")
-    anchor = (revenue or results or [None])[-1]
-    if anchor is None:
+    candidates = [*revenue, *results]
+    if not candidates:
         return []
+    own = [c for c in candidates if c.get("account_type") != "KONSERN"]  # the company's own accounts before any group accounts
+    anchor = max(own or candidates, key=lambda c: (c["reporting_period"]["tilDato"], c["field"] == "financials.revenue"))
+    scope = "group " if anchor.get("account_type") == "KONSERN" else ""
     period = anchor["reporting_period"]["tilDato"]
     latest_revenue = in_period(revenue, anchor)
     latest_result = in_period(results, anchor)
     if latest_revenue and latest_result:
-        out = [f"Filed revenue for the period ending {period} was {_money(latest_revenue['value'], latest_revenue.get('currency'))}, with an annual result of {_money(latest_result['value'], latest_result.get('currency'))}."]
+        out = [f"Filed {scope}revenue for the period ending {period} was {_money(latest_revenue['value'], latest_revenue.get('currency'))}, with an annual result of {_money(latest_result['value'], latest_result.get('currency'))}."]
     elif latest_revenue:
-        out = [f"Filed revenue for the period ending {period} was {_money(latest_revenue['value'], latest_revenue.get('currency'))}."]
+        out = [f"Filed {scope}revenue for the period ending {period} was {_money(latest_revenue['value'], latest_revenue.get('currency'))}."]
     else:
-        out = [f"The filed annual result for the period ending {period} was {_money(latest_result['value'], latest_result.get('currency'))}; no revenue figure was filed for that period."]
+        out = [f"The filed {scope}annual result for the period ending {period} was {_money(latest_result['value'], latest_result.get('currency'))}; no revenue figure was filed for that period."]
 
     series = revenue if latest_revenue else results
     earlier = [c for c in series if c["reporting_period"]["tilDato"] < period and c.get("account_type") == anchor.get("account_type")]
@@ -249,7 +252,8 @@ def build_summary(profile: dict[str, Any], claims: list[dict[str, Any]], publish
         say(text, "ev-financials")
     leader = next((c["value"] for c in claims if c["field"] == "leadership.role" and isinstance(c.get("value"), dict) and c["value"].get("role_code") == "DAGL"), None) or next((c["value"] for c in claims if c["field"] == "leadership.role" and isinstance(c.get("value"), dict) and c["value"].get("role_code") == "LEDE"), None)
     if leader:
-        say(f"{leader.get('name')} is registered as {str(leader.get('role') or 'a role holder').lower()}.", "ev-roles")
+        role = {"DAGL": "managing director (daglig leder)", "LEDE": "chair of the board (styrets leder)"}.get(str(leader.get("role_code")), str(leader.get("role") or "a role holder").lower())
+        say(f"{leader.get('name')} is registered as {role}.", "ev-roles")
     workplaces = sum(1 for c in claims if c["field"] == "registered_workplace" and c["availability"] == "available")
     if workplaces:
         say(f"It has {workplaces} registered workplace(s).", "ev-locations")
@@ -258,7 +262,8 @@ def build_summary(profile: dict[str, Any], claims: list[dict[str, Any]], publish
         say(f"Its official website is {website.get('value')}, confirmed by: {'; '.join(website.get('identity_reasons') or ['site identity checks'])}.", "ev-website")
     else:
         say("No website could be confirmed as this exact entity, so no site-based facts are published.", "ev-website")
-    gaps = sorted({c["field"].split(".")[0] for c in claims if c["availability"] != "available"})
+    gap_names = {"company_profile": "linked social profiles", "hiring": "hiring information", "official_website": "official website", "public_activity": "dated public activity", "public_brand": "public brand name", "registered_employees": "registered employee count", "self_description": "the company's own description", "leadership": "leadership", "financials": "filed accounts", "registered_workplace": "registered workplaces", "group": "group links"}
+    gaps = sorted({gap_names.get(c["field"].split(".")[0], c["field"].split(".")[0].replace("_", " ")) for c in claims if c["availability"] != "available"})
     gap_evidence = sorted({evidence_id for c in claims if c["availability"] != "available" for evidence_id in c.get("evidence_ids") or []})[:4]
     say("Not found or not checked in this run: " + (", ".join(gaps) if gaps else "nothing") + ".", *gap_evidence)
     return {"text": " ".join(item["text"] for item in sentences), "sentences": sentences}
