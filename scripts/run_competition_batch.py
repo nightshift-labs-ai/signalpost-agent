@@ -206,6 +206,11 @@ def main() -> None:
         pool.shutdown(wait=False, cancel_futures=True)
 
     report, exit_code = finalize("run time budget reached before this company finished")
+    try:  # the browsable page is a convenience: it must never change the envelopes, the report or the exit code
+        from build_site import build as build_site_page
+        build_site_page(args.output, Path(args.output).parent / "site" / "index.html")
+    except Exception as exc:  # noqa: BLE001
+        print(f"site page skipped: {type(exc).__name__}: {str(exc)[:160]}", file=sys.stderr)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     sys.stdout.flush()
     # Abandoned worker threads may still sit in a network timeout; they must not hold the process open.

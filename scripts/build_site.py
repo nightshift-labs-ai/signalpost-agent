@@ -1,65 +1,260 @@
 #!/usr/bin/env python3
-"""Build a single static page from envelope JSONL: find a company, compare two, check each fact's source."""
+"""Build one static page from envelope JSONL: find a company, compare two, and check the evidence behind any fact."""
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
+from typing import Any, Iterable
 
-PAGE = """<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+PAGE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
 <title>Signalpost: Norwegian company profiles</title>
 <style>
-:root{--ink:#17201d;--mute:#5d6b66;--line:#d8dfdc;--ok:#116b4f;--warn:#9a5b00}
-*{box-sizing:border-box}body{font:16px/1.5 system-ui,sans-serif;color:var(--ink);margin:0;background:#f6f8f7}
-header{background:#fff;border-bottom:1px solid var(--line);padding:16px}header h1{margin:0;font-size:20px}header p{margin:4px 0 0;color:var(--mute);font-size:14px}
+:root{--ink:#17201d;--mute:#56645f;--line:#d8dfdc;--ok:#0d6146;--warn:#8a5100;--bg:#f6f8f7;--tint:#eef3f1}
+*{box-sizing:border-box}
+body{font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--ink);margin:0;background:var(--bg)}
+header{background:#fff;border-bottom:1px solid var(--line);padding:14px 16px}
+header h1{margin:0;font-size:20px}
+header p{margin:2px 0 0;color:var(--mute);font-size:14px}
 main{max-width:1180px;margin:0 auto;padding:16px;display:grid;gap:16px}
-.bar{display:grid;gap:8px;grid-template-columns:1fr 1fr}input{width:100%;padding:10px;font:inherit;border:1px solid var(--line);border-radius:6px}
-.cols{display:grid;gap:16px;grid-template-columns:1fr 1fr}@media(max-width:760px){.cols,.bar{grid-template-columns:1fr}}
-.card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;min-width:0}.card h2{margin:0 0 4px;font-size:18px}.sub{color:var(--mute);font-size:13px}
-.sum{margin:10px 0}h3{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);margin:16px 0 4px}
-table{width:100%;border-collapse:collapse;font-size:14px}td{border-top:1px solid var(--line);padding:5px 6px 5px 0;vertical-align:top;overflow-wrap:anywhere}td:first-child{color:var(--mute);width:36%}
-a{color:var(--ok)}.st{font-size:12px;color:var(--warn)}ul.list{list-style:none;margin:6px 0 0;padding:0;max-height:210px;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:6px}ul.list li{padding:7px 10px;cursor:pointer;border-top:1px solid var(--line)}ul.list li:first-child{border:0}ul.list li:hover{background:#eef3f1}
+a{color:var(--ok)}
+.bar{display:grid;gap:10px;grid-template-columns:1fr 1fr}
+.pick{position:relative;min-width:0}
+.pick label{display:block;font-size:13px;font-weight:600;margin-bottom:3px}
+input[type=search]{width:100%;min-height:44px;padding:9px 11px;font:inherit;border:1px solid #9aa8a3;border-radius:6px;background:#fff}
+.list{list-style:none;margin:4px 0 0;padding:0;max-height:280px;overflow:auto;background:#fff;border:1px solid var(--line);border-radius:6px}
+.list:empty{display:none}
+.list button{display:block;width:100%;min-height:44px;text-align:left;font:inherit;background:none;border:0;border-top:1px solid var(--line);padding:8px 11px;cursor:pointer;color:inherit}
+.list li:first-child button{border-top:0}
+.list button:hover,.list button:focus,.list button.on{background:var(--tint);outline:none}
+.tag{display:inline-block;font-size:11px;line-height:16px;padding:0 5px;border-radius:3px;background:var(--tint);color:var(--ok);margin-left:4px}
+.tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:14px}
+.tools button{min-height:44px;font:inherit;font-size:14px;padding:6px 12px;border:1px solid #9aa8a3;border-radius:6px;background:#fff;cursor:pointer}
+.tools span{color:var(--mute)}
+.card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;min-width:0}
+.card h2{margin:0;font-size:19px;overflow-wrap:anywhere}
+.mute{color:var(--mute);font-size:14px}
+.sum{margin:10px 0 0}
+.cols{display:grid;gap:16px;grid-template-columns:1fr 1fr}
+h3{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);margin:18px 0 2px}
+.fact{display:grid;grid-template-columns:minmax(0,34%) minmax(0,1fr);gap:0 10px;padding:6px 0;border-top:1px solid var(--line);font-size:15px}
+.fact>div{min-width:0;overflow-wrap:anywhere}
+.fact>div:first-child{color:var(--mute)}
+.state{color:var(--warn);font-size:14px}
+details.src{margin-top:2px;font-size:13px}
+details.src summary{cursor:pointer;color:var(--ok);min-height:28px;padding:3px 0}
+.ev{border-left:3px solid var(--line);padding:2px 0 2px 8px;margin:4px 0;font-size:13px;overflow-wrap:anywhere}
+.ev dl{margin:2px 0 0;display:grid;grid-template-columns:max-content minmax(0,1fr);gap:0 8px}
+.ev dt{color:var(--mute)}.ev dd{margin:0;min-width:0}
+.q{font-style:italic}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:6px 8px;border-top:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-weight:600;background:var(--bg)}
+td.n{text-align:right;white-space:nowrap}
+td:first-child,th:first-child{color:var(--mute);font-weight:400}
+.better{font-weight:600}
+footer{max-width:1180px;margin:0 auto;padding:0 16px 24px;font-size:13px;color:var(--mute)}
+@media(max-width:760px){.cols,.bar{grid-template-columns:minmax(0,1fr)}.fact{grid-template-columns:minmax(0,1fr)}.fact>div:first-child{font-size:13px}}
 </style>
-<header><h1>Signalpost: Norwegian company profiles</h1><p>Every fact links to its source. Missing data is shown as missing, never as zero. Built by an AI agent (Nightshift Labs).</p></header>
-<main><div class=bar><div><input id=qa placeholder="Find a company by name or organisation number" aria-label="Find company"><ul class=list id=la></ul></div><div><input id=qb placeholder="Compare with a second company" aria-label="Compare with"><ul class=list id=lb></ul></div></div>
-<div class=cols><section class=card id=a><p class=sub>Choose a company above.</p></section><section class=card id=b><p class=sub>Choose a second company to compare.</p></section></div></main>
-<script>const D=__DATA__;
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const safe=u=>/^https?:\\/\\//i.test(u||'')?esc(u):'#';
-function card(c){if(!c)return'';const by={};for(const x of c.claims){const g=x.field.split('.')[0];(by[g]=by[g]||[]).push(x)}
-let h=`<h2>${esc(c.name)}</h2><div class=sub>Org. no. ${esc(c.org)}</div><p class=sum>${esc(c.summary)}</p>`;
-for(const g of Object.keys(by)){h+=`<h3>${esc(g.replace(/_/g,' '))}</h3><table>`;for(const x of by[g]){const v=x.availability==='available'?`${esc(x.value)} ${(x.sources||[]).map(s=>`<a href="${safe(s)}" rel=noopener target=_blank>source</a>`).join(' ')}`:`<span class=st>${esc(x.availability.replace('_',' '))}</span>`;h+=`<tr><td>${esc((x.field.split('.').slice(1).join(' ')||g).replace(/_/g,' '))}</td><td>${v}</td></tr>`}h+='</table>'}return h}
-function bind(q,l,t){const I=document.getElementById(q),L=document.getElementById(l),T=document.getElementById(t);const show=()=>{const s=I.value.trim().toLowerCase();L.innerHTML='';D.filter(c=>!s||c.name.toLowerCase().includes(s)||c.org.includes(s)).slice(0,20).forEach(c=>{const li=document.createElement('li');li.textContent=c.name+' ('+c.org+')';li.onclick=()=>{T.innerHTML=card(c);I.value=c.name;L.innerHTML=''};L.appendChild(li)})};I.addEventListener('input',show);I.addEventListener('focus',show)}
-bind('qa','la','a');bind('qb','lb','b');
-</script></html>"""
+</head>
+<body>
+<header><h1>Signalpost: Norwegian company profiles</h1>
+<p id="meta"></p></header>
+<main>
+<div class="bar">
+ <div class="pick"><label for="qa">Find a company</label><input id="qa" type="search" autocomplete="off" placeholder="Name or organisation number"><ul class="list" id="la"></ul></div>
+ <div class="pick"><label for="qb">Compare with</label><input id="qb" type="search" autocomplete="off" placeholder="Choose a second company"><ul class="list" id="lb"></ul></div>
+</div>
+<div class="tools"><button id="copy" type="button">Copy link to this view</button><button id="clear" type="button">Clear comparison</button><span id="note" role="status"></span></div>
+<section class="card" id="cmp" hidden></section>
+<div class="cols"><section class="card" id="a" aria-live="polite"></section><section class="card" id="b" aria-live="polite"></section></div>
+</main>
+<footer id="foot"></footer>
+<script>
+const D=__DATA__,M=__META__;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const safe=u=>/^https?:\/\//i.test(u||'')?esc(u):'';
+const nf=new Intl.NumberFormat('nb-NO');
+const byOrg=new Map(D.map(c=>[c.org,c]));
+const FIN=[['revenue','Revenue'],['operating_result','Operating result'],['profit_before_tax','Profit before tax'],['annual_result','Annual result'],['assets','Total assets'],['equity','Equity'],['debt','Debt']];
+const STATE={not_available:'Not found',ambiguous:'Held back: identity not certain',blocked:'Blocked by the source',not_applicable:'Not applicable',failed:'Check failed'};
+const CLASS={official_registry_bulk:'Official register, bulk file',official_registry_live:'Official register',official_annual_accounts:'Official annual accounts',official_roles:'Official roles register',official_group_structure:'Official group register',official_subunits:'Official workplace register',official_rule_interpretation:'Rule applied to official data',company_owned:'Company website',company_owned_discovered:'Company website',registry_linked_company_website:'Website filed in the register'};
+const when=s=>s?String(s).replace('T',' ').replace(/\.\d+Z?$/,'').replace(/Z$/,'')+' UTC':'';
+const host=u=>{try{return new URL(u).hostname.replace(/^www\./,'')}catch(e){return ''}};
+const link=(u,t)=>safe(u)?`<a href="${safe(u)}" rel="noopener noreferrer" target="_blank">${esc(t||host(u)||u)}</a>`:esc(t||u);
+function sources(c,ids){const items=(ids||[]).map(i=>c.ev[i]).filter(Boolean);if(!items.length)return'';
+ return `<details class="src"><summary>Source${items.length>1?'s ('+items.length+')':''}</summary>`+items.map(e=>`<div class="ev">${e.u?link(e.u):''}<dl><dt>Type</dt><dd>${esc(CLASS[e.c]||e.c||'')}</dd><dt>Retrieved</dt><dd>${esc(when(e.at))}</dd>${e.q?`<dt>Excerpt</dt><dd class="q">${esc(e.q)}</dd>`:''}<dt>Method</dt><dd>${esc(e.m||'')}</dd>${e.h?`<dt>Content hash</dt><dd title="${esc(e.h)}">${esc(e.h.slice(0,16))}…</dd>`:''}</dl></div>`).join('')+'</details>'}
+const value=x=>x.a!=='available'?`<span class="state">${esc(STATE[x.a]||x.a)}</span>`:(x.u?link(x.u,x.v):(/^https?:\/\//i.test(x.v)?link(x.v):esc(x.v)));
+const fact=(c,label,x)=>`<div class="fact"><div>${esc(label)}</div><div>${value(x)}${x.note?` <span class="mute">${esc(x.note)}</span>`:''}${sources(c,x.e)}</div></div>`;
+const all=(c,f)=>c.claims.filter(x=>x.f===f);
+const first=(c,f)=>all(c,f)[0];
+const avail=(c,f)=>all(c,f).filter(x=>x.a==='available');
+function periods(c){const m=new Map();for(const x of c.claims){if(!x.f.startsWith('financials.')||x.a!=='available')continue;const k=(x.end||'')+'|'+(x.t||'');if(!m.has(k))m.set(k,{end:x.end||'',t:x.t||'',v:{}});m.get(k).v[x.f.split('.')[1]]=x}return[...m.values()].sort((p,q)=>q.end.localeCompare(p.end)||(p.t==='SELSKAP'?-1:1))}
+const pLabel=p=>(p.end||'Unknown period').slice(0,4)+(p.t&&p.t!=='SELSKAP'?' (group)':'');
+function section(title,body){return body?`<h3>${esc(title)}</h3>${body}`:''}
+function finTable(c){const ps=periods(c).slice(0,4);if(!ps.length)return'<p class="state">No filed annual accounts were found for this company in this run.</p>';
+ let h=`<div class="scroll"><table><thead><tr><th>NOK</th>${ps.map(p=>`<th title="Period ending ${esc(p.end)}">${esc(pLabel(p))}</th>`).join('')}</tr></thead><tbody>`;
+ for(const[k,l]of FIN){h+=`<tr><td>${esc(l)}</td>${ps.map(p=>{const x=p.v[k];return x&&typeof x.n==='number'?`<td class="n">${nf.format(x.n)}</td>`:'<td class="n"><span class="state">Not filed</span></td>'}).join('')}</tr>`}
+ const x=ps[0].v.revenue||ps[0].v.annual_result||Object.values(ps[0].v)[0];
+ return h+`</tbody></table></div>${sources(c,x?x.e:[])}`}
+function card(c,empty){if(!c)return`<p class="mute">${esc(empty)}</p>`;
+ const avAct=avail(c,'public_activity.dated_item').slice().sort((a,b)=>String(b.at||'').localeCompare(String(a.at||'')));
+ const missing=c.claims.filter(x=>x.a!=='available'&&!x.f.startsWith('company_profile.'));
+ const social=c.claims.filter(x=>x.f.startsWith('company_profile.')&&x.a==='available');
+ let h=`<h2>${esc(c.name)}</h2><div class="mute">Org. no. ${esc(c.org)} · checked ${esc(when(c.done))}</div><p class="sum">${esc(c.summary)}</p>`;
+ h+=section('Company',['legal_form','industry','business_address','registered_employees','official_website','public_brand','self_description'].flatMap(f=>{const x=first(c,f);return x&&x.a==='available'?[fact(c,{legal_form:'Legal form',industry:'Industry',business_address:'Registered address',registered_employees:'Registered employees',official_website:'Official website',public_brand:'Public brand',self_description:'Own description'}[f],x)]:[]}).join(''));
+ h+=section('Filed annual accounts',finTable(c));
+ h+=section('Leadership',avail(c,'leadership.role').map(x=>fact(c,x.r||'Role',{...x,note:x.at?'since '+x.at:''})).join(''));
+ h+=section('Registered workplaces',avail(c,'registered_workplace').map(x=>fact(c,'Workplace',x)).join(''));
+ h+=section('Group',avail(c,'group.link').map(x=>fact(c,x.rel||'Linked company',x)).join(''));
+ h+=section('Linked profiles',social.map(x=>fact(c,x.f.split('.')[1],x)).join(''));
+ h+=section('Hiring',[...avail(c,'hiring.job_posting'),...avail(c,'hiring.job_board_link'),...avail(c,'hiring.careers_page')].map(x=>fact(c,{'hiring.job_posting':'Job posting','hiring.job_board_link':'Recruitment board','hiring.careers_page':'Careers page'}[x.f],x)).join(''));
+ h+=section('Dated public activity',avAct.slice(0,12).map(x=>fact(c,x.at||'Undated',x)).join('')+(avAct.length>12?`<p class="mute">${avAct.length-12} older items are in the JSON output.</p>`:''));
+ h+=section('Changes since the previous run',c.changes.length?c.changes.map(t=>`<div class="fact"><div>Change</div><div>${esc(t)}</div></div>`).join(''):`<p class="mute">${esc(c.first?'First run for this company, so there is no earlier snapshot to compare.':'No material change since the previous run.')}</p>`);
+ if(missing.length)h+=section('Not found or not checked',`<details class="src"><summary>Show ${missing.length} open items</summary>${missing.map(x=>fact(c,x.f.replace(/[._]/g,' '),x)).join('')}</details>`);
+ return h}
+function metric(c,key){const p=periods(c)[0];return p&&p.v[key]||null}
+function compare(a,b){if(!a||!b||a===b){$('cmp').hidden=true;$('cmp').innerHTML='';return}
+ const end=p=>p?pLabel(p):'';
+ const rows=[['Legal form',c=>first(c,'legal_form')],['Industry',c=>first(c,'industry')],['Registered employees',c=>first(c,'registered_employees')],['Official website',c=>first(c,'official_website')]];
+ const cell=(c,x)=>x?`<td>${value(x)}${sources(c,x.e)}</td>`:'<td><span class="state">Not found</span></td>';
+ let h=`<h2>Side by side</h2><div class="scroll"><table><thead><tr><th></th><th>${esc(a.name)}</th><th>${esc(b.name)}</th></tr></thead><tbody>`;
+ for(const[l,g]of rows)h+=`<tr><td>${esc(l)}</td>${cell(a,g(a))}${cell(b,g(b))}</tr>`;
+ const pa=periods(a)[0],pb=periods(b)[0];
+ h+=`<tr><td>Latest accounts</td><td>${esc(end(pa))||'<span class="state">Not found</span>'}</td><td>${esc(end(pb))||'<span class="state">Not found</span>'}</td></tr>`;
+ for(const[k,l]of FIN){const xa=metric(a,k),xb=metric(b,k);const f=(c,x)=>x&&typeof x.n==='number'?`<td class="n">${nf.format(x.n)} ${esc(x.cur||'')}${sources(c,x.e)}</td>`:'<td class="n"><span class="state">Not filed</span></td>';h+=`<tr><td>${esc(l)}</td>${f(a,xa)}${f(b,xb)}</tr>`}
+ const counts=[['Leaders on record','leadership.role'],['Registered workplaces','registered_workplace'],['Job postings','hiring.job_posting'],['Dated activity items','public_activity.dated_item']];
+ for(const[l,f]of counts){const sh=c=>{const n=avail(c,f).length;return n?String(n):`<span class="state">${esc(STATE.not_available)}</span>`};h+=`<tr><td>${esc(l)}</td><td>${sh(a)}</td><td>${sh(b)}</td></tr>`}
+ $('cmp').innerHTML=h+'</tbody></table></div>';$('cmp').hidden=false}
+const tags=c=>(avail(c,'official_website').length?'<span class="tag">website</span>':'')+(avail(c,'hiring.job_posting').length?'<span class="tag">jobs</span>':'')+(avail(c,'public_activity.dated_item').length?'<span class="tag">activity</span>':'');
+const S={a:null,b:null};
+function render(update){const a=byOrg.get(S.a),b=byOrg.get(S.b);$('a').innerHTML=card(a,'Choose a company above.');$('b').innerHTML=card(b,'Choose a second company to compare it side by side.');compare(a,b);$('qa').value=a?a.name:'';$('qb').value=b?b.name:'';
+ if(update){const h=[];if(S.a)h.push('a='+S.a);if(S.b)h.push('b='+S.b);history.replaceState(null,'','#'+h.join('&'))}}
+function bind(key,inp,list){const I=$(inp),L=$(list);let idx=-1;
+ const close=()=>{L.innerHTML='';idx=-1};
+ const show=()=>{const s=I.value.trim().toLowerCase();L.innerHTML='';idx=-1;D.filter(c=>!s||c.name.toLowerCase().includes(s)||c.org.includes(s.replace(/\s/g,''))).slice(0,25).forEach(c=>{const li=document.createElement('li');const b=document.createElement('button');b.type='button';b.innerHTML=esc(c.name)+' <span class="mute">'+esc(c.org)+'</span>'+tags(c);b.onclick=()=>{S[key]=c.org;close();render(true)};li.appendChild(b);L.appendChild(li)})};
+ I.addEventListener('input',show);I.addEventListener('focus',()=>{I.select();show()});
+ I.addEventListener('keydown',e=>{const bs=[...L.querySelectorAll('button')];if(e.key==='ArrowDown'&&bs.length){e.preventDefault();idx=Math.min(idx+1,bs.length-1)}else if(e.key==='ArrowUp'&&bs.length){e.preventDefault();idx=Math.max(idx-1,0)}else if(e.key==='Enter'&&bs.length){e.preventDefault();bs[Math.max(idx,0)].click();return}else if(e.key==='Escape'){close();return}else return;bs.forEach((b,i)=>b.classList.toggle('on',i===idx));if(bs[idx])bs[idx].scrollIntoView({block:'nearest'})});
+ document.addEventListener('click',e=>{if(e.target!==I&&!L.contains(e.target))close()})}
+function fromHash(){const p=new URLSearchParams(location.hash.slice(1));S.a=byOrg.has(p.get('a'))?p.get('a'):null;S.b=byOrg.has(p.get('b'))?p.get('b'):null;if(!S.a&&!S.b&&D.length){const rich=D.slice().sort((x,y)=>y.score-x.score);S.a=rich[0].org}render(false)}
+bind('a','qa','la');bind('b','qb','lb');
+$('copy').onclick=async()=>{const u=location.href;try{await navigator.clipboard.writeText(u);$('note').textContent='Link copied.'}catch(e){$('note').textContent=u}};
+$('clear').onclick=()=>{S.b=null;render(true);$('note').textContent=''};
+window.addEventListener('hashchange',fromHash);
+$('meta').textContent=`${D.length} companies · run ${M.run} · every fact opens its source, and anything not found is shown as not found, never as zero.`;
+$('foot').innerHTML=`Built by an AI agent (Claude, operating Nightshift Labs for one human owner). Company register and annual-account data: Brønnøysundregistrene open data under <a href="https://data.norge.no/nlod/en/2.0" rel="noopener noreferrer" target="_blank">NLOD 2.0</a>. Website facts are short excerpts from each company's own pages, linked to the source. Names of people appear only as registered in the public register. Corrections or removal: nightshiftlabs-api@agentmail.to`;
+fromHash();
+</script>
+</body>
+</html>
+"""
 
 
-def row(envelope: dict) -> dict:
-    evidence = {item["id"]: item.get("source_url") for item in envelope.get("evidence") or []}
+def _names(name: Any) -> str:
+    """The roles register gives a person's name as text and an organisation's name as a list of name lines."""
+    return " ".join(str(item) for item in name if item) if isinstance(name, list) else str(name or "")
+
+
+def _display(value: Any) -> str:
+    if isinstance(value, dict):
+        if "name" in value and "role" in value:
+            return _names(value["name"])
+        if "title" in value:
+            return str(value["title"])
+        if "adresse" in value or "poststed" in value:
+            street = ", ".join(str(item) for item in value.get("adresse") or [] if item)
+            place = " ".join(str(item) for item in (value.get("postnummer"), value.get("poststed")) if item)
+            return ", ".join(part for part in (street, place) if part)
+        if "beskrivelse" in value:
+            return " ".join(str(item) for item in (value.get("beskrivelse"), f"({value['kode']})" if value.get("kode") else None) if item)
+        if "name" in value:
+            parts = [_names(value["name"])]
+            address = value.get("address")
+            if isinstance(address, dict):
+                parts.append(_display(address))
+            return ": ".join(part for part in parts if part)
+        return json.dumps(value, ensure_ascii=False)
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _claim(claim: dict[str, Any]) -> dict[str, Any]:
+    value = claim.get("value")
+    row: dict[str, Any] = {"f": claim.get("field", ""), "a": claim.get("availability", ""), "v": _display(value), "e": list(claim.get("evidence_ids") or [])}
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        row["n"] = value
+    if claim.get("currency"):
+        row["cur"] = claim["currency"]
+    period = claim.get("reporting_period") or {}
+    if isinstance(period, dict) and period.get("tilDato"):
+        row["end"] = period["tilDato"]
+    if claim.get("account_type"):
+        row["t"] = claim["account_type"]
+    if claim.get("effective_at"):
+        row["at"] = claim["effective_at"]
+    if isinstance(value, dict):
+        if isinstance(value.get("url"), str):
+            row["u"] = value["url"]
+        if value.get("date") and not row.get("at"):
+            row["at"] = value["date"]
+        if "role" in value:
+            row["r"] = value.get("role")
+        if "relationship" in value:
+            row["rel"] = value.get("relationship")
+    return row
+
+
+def _evidence(item: dict[str, Any]) -> dict[str, Any]:
+    return {"u": item.get("source_url"), "c": item.get("source_class"), "at": item.get("retrieved_at"), "h": item.get("content_sha256"), "q": item.get("claim_span"), "m": item.get("extraction_method")}
+
+
+def row(envelope: dict[str, Any]) -> dict[str, Any]:
     summary = envelope.get("summary") or {}
+    claims = [_claim(claim) for claim in envelope.get("claims") or []]
+    cited = {evidence_id for claim in claims for evidence_id in claim["e"]}
+    richness = sum(1 for claim in claims if claim["a"] == "available" and not claim["f"].startswith(("financials.", "leadership.", "registered_workplace")))
+    richness += 25 * any(claim["f"] == "official_website" and claim["a"] == "available" for claim in claims)
+    refresh = envelope.get("refresh") or {}
     return {
         "org": envelope["organisation_number"],
         "name": (envelope.get("profile") or {}).get("name") or envelope["organisation_number"],
         "summary": summary.get("text") if isinstance(summary, dict) else summary,
-        "claims": [{
-            "field": claim["field"],
-            "availability": claim["availability"],
-            "value": _display(claim.get("value")),
-            "sources": sorted({evidence[item] for item in claim.get("evidence_ids") or [] if evidence.get(item)}),
-        } for claim in envelope.get("claims") or []],
+        "done": envelope.get("completed_at"),
+        "first": bool(refresh.get("first_observation")) if isinstance(refresh, dict) else False,
+        "changes": [str(item.get("summary") or item.get("description") or item.get("field") or item) if isinstance(item, dict) else str(item) for item in envelope.get("changes") or []],
+        "claims": claims,
+        "ev": {item["id"]: _evidence(item) for item in envelope.get("evidence") or [] if item.get("id") in cited},
+        "score": richness,
     }
 
 
-def _display(value: object) -> str:
-    if isinstance(value, dict):
-        if "name" in value and "role" in value:
-            return f"{value['name']} ({value.get('role')})"
-        if "title" in value:
-            return " ".join(str(value[key]) for key in ("title", "date") if value.get(key))
-        if "name" in value:
-            return str(value["name"])
-        return json.dumps(value, ensure_ascii=False)
-    return "" if value is None else str(value)
+def render(envelopes: Iterable[dict[str, Any]]) -> tuple[str, int]:
+    rows = [row(envelope) for envelope in envelopes]
+    rows.sort(key=lambda item: str(item["name"]).casefold())
+    runs = sorted({str(envelope.get("run_id")) for envelope in envelopes if envelope.get("run_id")}) if isinstance(envelopes, list) else []
+    meta = {"run": runs[-1] if runs else "unknown"}
+    # "<" stays inside JSON strings only; escaping it keeps a value from closing the script element.
+    data = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
+    return PAGE.replace("__DATA__", data, 1).replace("__META__", json.dumps(meta, ensure_ascii=False).replace("<", "\\u003c"), 1), len(rows)
+
+
+def build(envelopes_path: str | Path, output_path: str | Path) -> int:
+    lines = Path(envelopes_path).read_text(encoding="utf-8").splitlines()
+    page, count = render([json.loads(line) for line in lines if line.strip()])
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(page, encoding="utf-8")
+    return count
 
 
 def main() -> None:
@@ -67,11 +262,7 @@ def main() -> None:
     parser.add_argument("--envelopes", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    rows = [row(json.loads(line)) for line in Path(args.envelopes).read_text(encoding="utf-8").splitlines() if line.strip()]
-    data = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.output).write_text(PAGE.replace("__DATA__", data), encoding="utf-8")
-    print(len(rows), "profiles ->", args.output)
+    print(build(args.envelopes, args.output), "profiles ->", args.output)
 
 
 if __name__ == "__main__":

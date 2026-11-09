@@ -504,3 +504,50 @@ def test_sitemap_page_type_children_are_not_news():
     assert keep("https://a.no/nyhet-sitemap.xml")
     assert not keep("https://a.no/wp-sitemap-posts-page-1.xml")
     assert not keep("https://a.no/page-sitemap.xml")
+
+
+def _load_site_builder():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("build_site", Path(__file__).resolve().parents[1] / "scripts" / "build_site.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _site_envelope(name: str = "TEST AS") -> dict:
+    return {
+        "organisation_number": ORG, "run_id": "r1", "completed_at": "2026-11-09T10:00:00Z", "profile": {"name": name}, "summary": {"text": "s"}, "changes": [], "refresh": {"first_observation": True},
+        "evidence": [{"id": "e1", "source_url": "https://data.brreg.no/x", "source_class": "official_roles", "retrieved_at": "2026-11-09T10:00:00Z", "content_sha256": "ab", "extraction_method": "brreg_api_json"}, {"id": "unused", "source_url": "https://example.no/unused"}],
+        "claims": [
+            {"field": "leadership.role", "availability": "available", "value": {"name": ["ATELLA REGNSKAP AS"], "role": "Regnskapsfoerer", "role_code": "REGN"}, "evidence_ids": ["e1"]},
+            {"field": "financials.revenue", "availability": "not_available", "value": None, "evidence_ids": ["e1"]},
+            {"field": "business_address", "availability": "available", "value": {"adresse": ["Gate 1"], "postnummer": "0001", "poststed": "OSLO"}, "evidence_ids": ["e1"]},
+        ],
+    }
+
+
+def test_site_row_formats_values_and_keeps_missing_missing() -> None:
+    builder = _load_site_builder()
+    row = builder.row(_site_envelope())
+    by_field = {claim["f"]: claim for claim in row["claims"]}
+    assert by_field["leadership.role"]["v"] == "ATELLA REGNSKAP AS"
+    assert by_field["business_address"]["v"] == "Gate 1, 0001 OSLO"
+    assert "n" not in by_field["financials.revenue"] and by_field["financials.revenue"]["v"] == ""  # a missing figure must never become 0
+    assert set(row["ev"]) == {"e1"}  # only evidence a claim cites is shipped
+
+
+def test_site_page_cannot_be_broken_out_of_by_data() -> None:
+    builder = _load_site_builder()
+    page, count = builder.render([_site_envelope("</script><img src=x onerror=alert(1)>")])
+    assert count == 1
+    assert "</script><img" not in page
+    assert page.count("</script>") == 1
+
+
+def test_site_build_writes_one_page(tmp_path) -> None:
+    import json as json_module
+    builder = _load_site_builder()
+    source = tmp_path / "e.jsonl"
+    source.write_text(json_module.dumps(_site_envelope()) + "\n\n", encoding="utf-8")
+    assert builder.build(source, tmp_path / "site" / "index.html") == 1
+    assert 'content="noindex"' in (tmp_path / "site" / "index.html").read_text(encoding="utf-8")
