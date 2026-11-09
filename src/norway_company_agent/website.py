@@ -147,6 +147,24 @@ def _page_dates(html_metadata: dict[str, Any], soup: BeautifulSoup) -> list[str]
     return sorted({item[:10] for item in found if re.match(r"^\d{4}-\d{2}-\d{2}", item)})
 
 
+JOB_BOARD_LINK = re.compile(r"^(?:[a-z0-9-]+\.)*(?:myworkdayjobs\.com/|teamtailor\.com/|webcruiter\.(?:no|com)/|jobylon\.com/|jobbnorge\.no/|reachmee\.com/|recman\.no/|recruitee\.com/|varbi\.com/|hrmanager\.com/|cvideo\.no/|finn\.no/job/(?:ad|company|fulltime)|arbeidsplassen\.nav\.no/stillinger/stilling/)", re.I)
+
+
+def job_board_links(soup: BeautifulSoup, page_url: str) -> list[dict[str, Any]]:
+    """Recruitment-board links on the company's own careers page. The destination is reported, never fetched."""
+    found: dict[str, dict[str, Any]] = {}
+    for anchor in soup.select("a[href]"):
+        try:
+            url = urllib.parse.urljoin(page_url, str(anchor.get("href") or "").strip())
+            parsed = urllib.parse.urlparse(url)
+        except ValueError:
+            continue
+        if parsed.scheme not in {"http", "https"} or not JOB_BOARD_LINK.match(parsed.netloc.lower() + parsed.path):
+            continue
+        found[url] = {"url": url[:300], "board_host": parsed.netloc.lower(), "anchor_text": " ".join(anchor.get_text(" ", strip=True).split())[:200], "source_url": page_url}
+    return list(found.values())[:20]
+
+
 def listed_jobs(soup: BeautifulSoup, page_url: str) -> list[dict[str, Any]]:
     """Job links on a careers page: deeper same-host paths with a real title, not navigation."""
     base = urllib.parse.urlparse(page_url)
@@ -551,6 +569,7 @@ def _fetch_secondary_page(url: str, *, homepage_domain: str, timeout: float, max
             "job_postings": job_postings(page_metadata, final_url),
             "kind": "jobs" if JOB_PATH.search(final_url) else "news" if NEWS_PATH.search(urllib.parse.urlparse(final_url).path) else "other",
             "listed_jobs": listed_jobs(page_soup, final_url) if JOB_PATH.search(final_url) else [],
+            "job_board_links": job_board_links(page_soup, final_url) if JOB_PATH.search(final_url) else [],
             "news_items": news_items(page_soup, final_url) if NEWS_PATH.search(urllib.parse.urlparse(final_url).path) else [],
             "org_number_excerpt": find_org_number(page_soup.get_text(" ", strip=True), org, (hints or {}).get("name_tokens")),
             "address_excerpt": find_address(page_soup.get_text(" ", strip=True), hints),

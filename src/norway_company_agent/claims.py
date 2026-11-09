@@ -147,6 +147,9 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
         if job_pages:
             page = site["pages"][job_pages[0]]
             claims.append(_claim("hiring.careers_page", page.get("url"), "available", CONFIDENCE["site"], [f"ev-site-{job_pages[0]}"]))
+        board_links = {link["url"]: (idx, link) for idx in job_pages for link in site["pages"][idx].get("job_board_links") or []}
+        for idx, link in board_links.values():
+            claims.append(_claim("hiring.job_board_link", link, "available", CONFIDENCE["site"], [f"ev-site-{idx}"], source_note="linked from the company's own careers page; the destination was not fetched"))
         activity = [(idx, page) for idx, page in enumerate(site.get("pages") or []) if page.get("kind") == "news"]
         dated = [(idx, {"title": item["title"], "url": item["url"], "date": item["date"]}) for idx, page in activity for item in page.get("news_items") or []]
         seen_urls = {item["url"] for _, item in dated}

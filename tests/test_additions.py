@@ -265,6 +265,14 @@ def test_feed_items_reads_rss_and_atom_with_real_titles(monkeypatch):
     assert website_module.feed_items(soup, "https://a.no/")["items"][0]["date"] == "2026-03-01"
 
 
+def test_job_board_links_come_only_from_known_boards():
+    from bs4 import BeautifulSoup
+    from norway_company_agent.website import job_board_links
+    html = '<a href="https://www.finn.no/job/ad/442503773">Konsulent</a><a href="https://nilfisk.wd3.myworkdayjobs.com/Nilfisk">Jobs</a><a href="https://www.finn.no/">FINN</a><a href="https://facebook.com/x">FB</a><a href="http://[bad">x</a>'
+    links = job_board_links(BeautifulSoup(html, "lxml"), "https://a.no/karriere")
+    assert [link["board_host"] for link in links] == ["www.finn.no", "nilfisk.wd3.myworkdayjobs.com"] and links[0]["anchor_text"] == "Konsulent"
+
+
 def _available(field, value, **extra):
     return {"field": field, "value": value, "availability": "available", "evidence_ids": ["ev-x"], **extra}
 
