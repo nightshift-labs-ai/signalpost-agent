@@ -198,7 +198,7 @@ def _looks_like_job_title(text: str) -> bool:
     return 1 <= len(words) <= 8 and len(text) <= 90 and text[-1] not in ".!?:;," and not NOT_A_TITLE_START.match(text) and not NOT_A_TITLE_WORD.search(text) and bool(JOB_TITLE_WORD.search(text))
 
 
-NOT_NEWS_PATH = re.compile(r"/(?:portfolio|portefolje|referanser?|prosjekter|products?|produkter?|shop|butikk)(?:/|$)|^/blogs/[^/]+/?$", re.I)
+NOT_NEWS_PATH = re.compile(r"/(?:portfolio|portefolje|referanser?|prosjekter|products?|produkter?|shop|butikk)(?:/|$)|^(?:/[a-z]{2}(?:-[a-z]{2})?)?/blogs/[^/]+/?$", re.I)
 
 
 def _no_xml_declaration(html: str) -> str:

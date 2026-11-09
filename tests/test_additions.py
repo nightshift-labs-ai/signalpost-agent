@@ -341,19 +341,31 @@ def test_read_capped_gives_up_on_a_slow_drip():
     raise AssertionError("expected a timeout")
 
 
-def address_site(url: str, title: str) -> dict:
-    site_value = site(url, title=title, text="Vi lager apper. " * 20)
+def address_site(url: str, title: str, text: str = "Vi lager apper. ") -> dict:
+    site_value = site(url, title=title, text=text * 20)
     site_value["value"]["registered_address_found_at"] = url + "kontakt"
     site_value["value"]["registered_address_excerpt"] = "Bjornstadveien 16, 1712 Gralum"
     return site_value
 
 
 def test_name_domain_with_registered_address_is_accepted_even_after_a_redirect():
-    found, _ = discover(PROFILE, None, fetch=fake_fetch({"gangstadbygg.no": address_site("https://www.studiox.no/", "Studio X")}), dns=lambda domain: domain == "gangstadbygg.no")
+    found, _ = discover(PROFILE, None, fetch=fake_fetch({"gangstadbygg.no": address_site("https://www.studiox.no/", "Studio X", "Gangstad lager apper. ")}), dns=lambda domain: domain == "gangstadbygg.no")
     assert found is not None
     reasons = found["value"]["identity_assessment"]["reasons"]
     assert any("equals the legal name" in reason for reason in reasons) and any("redirects to this site" in reason for reason in reasons)
     assert found["value"]["discovery"]["candidate"] == "gangstadbygg.no"
+
+
+def test_accepted_site_confidence_reflects_the_proof_that_accepted_it():
+    redirected, _ = discover(PROFILE, None, fetch=fake_fetch({"gangstadbygg.no": address_site("https://www.studiox.no/", "Studio X", "Gangstad lager apper. ")}), dns=lambda domain: domain == "gangstadbygg.no")
+    assert redirected["value"]["identity_assessment"]["score"] >= 0.9
+    direct, _ = discover(PROFILE, None, fetch=fake_fetch({"gangstadbygg.no": address_site("https://gangstadbygg.no/", "Velkommen")}), dns=lambda domain: domain == "gangstadbygg.no")
+    assert direct["value"]["identity_assessment"]["score"] >= 0.92
+
+
+def test_redirect_to_a_page_that_never_names_the_company_is_rejected():
+    found, _ = discover(PROFILE, None, fetch=fake_fetch({"gangstadbygg.no": address_site("https://www.kurs.no/", "Kursbedriften")}), dns=lambda domain: domain == "gangstadbygg.no")
+    assert found is None
 
 
 def test_other_domain_with_registered_address_stays_rejected():
@@ -667,4 +679,7 @@ def test_product_codes_and_shop_blog_indexes_stay_out_of_activity() -> None:
     assert not _is_product_code("2026") and not _is_product_code("Nyheter")
     assert NOT_NEWS_PATH.search("/blogs/nyheter-hold-deg-oppdatert")
     assert not NOT_NEWS_PATH.search("/blogs/nyheter/en-artikkel")
+    assert NOT_NEWS_PATH.search("/en/blogs/news")
+    assert NOT_NEWS_PATH.search("/en-eu/blogs/news/")
+    assert not NOT_NEWS_PATH.search("/en-eu/blogs/news/en-artikkel")
     assert re.fullmatch(r"(?=\S*\d)(?=\S*[^\W\d_])\S+", "1350m301t150") and not re.fullmatch(r"(?=\S*\d)(?=\S*[^\W\d_])\S+", "nyhet 2026")

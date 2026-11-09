@@ -175,8 +175,12 @@ def discover(
         if accepted and redirected and not (proven or all_name_tokens):
             # A company's domain may point to its trading brand, but a sister company's page looks the same: a person's name alone is not enough,
             # and a landing page whose title names another legal entity is that entity's page.
-            names_other_entity = bool(re.search(r"\b(?:AS|ASA)\b", str((gated.get("value") or {}).get("title") or "")))
-            if not (address or phone) or names_other_entity:
+            landing = gated.get("value") or {}
+            names_other_entity = bool(re.search(r"\b(?:AS|ASA)\b", str(landing.get("title") or "")))
+            landing_words = set(_tokens(" ".join(str(landing.get(key) or "") for key in ("title", "description", "main_text_excerpt"))))
+            # An operator whose page never mentions the company has at most taken over its address or number (krux.no -> a course chain).
+            name_on_landing = any(len(token) >= 4 and token in landing_words for token in _tokens(profile.get("name")))
+            if not (address or phone) or names_other_entity or not name_on_landing:
                 accepted = False
         if accepted and not proven and re.search(r"\bholding\b", _fold(str(profile.get("name") or ""))):
             accepted = False  # a holding company shares its name and address with the operating company whose site this usually is
@@ -202,7 +206,12 @@ def discover(
             final_host = urllib.parse.urlparse(value.get("final_url") or "").hostname or ""
             if final_host and final_host.removeprefix("www.") != candidate:
                 basis.append(f"{candidate} redirects to this site")
-            value["identity_assessment"] = {**assessment, "publishable": True, "status": "exact", "reasons": basis or list(assessment.get("reasons") or [])}
+            anchors = sum(map(bool, (address, phone, leader)))  # registry facts found on the site, independent of the name
+            strength = 1.0 if proven else 0.95 if anchors >= 2 else 0.92 if anchors == 1 else 0.9
+            if redirected and not proven:
+                strength = min(strength, 0.9)  # the company's domain points at another name: real, but less direct
+            score = max(float(assessment.get("score") or 0), strength)  # the published confidence must reflect the proof that accepted the site
+            value["identity_assessment"] = {**assessment, "publishable": True, "status": "exact", "score": score, "reasons": basis or list(assessment.get("reasons") or [])}
             gated["source_class"] = "company_owned_discovered"
             gated["source_type"] = "company_owned_discovered"
             return gated, metrics
