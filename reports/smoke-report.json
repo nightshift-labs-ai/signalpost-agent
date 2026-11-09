@@ -1,7 +1,7 @@
 {
-  "run_id": "smoke-023",
-  "started_at": "2026-11-09T17:34:52.997256Z",
-  "completed_at": "2026-11-09T17:37:05.251989Z",
+  "run_id": "smoke-024",
+  "started_at": "2026-11-09T18:05:01.629592Z",
+  "completed_at": "2026-11-09T18:07:28.495630Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "resumed_profiles": 0,
@@ -26,12 +26,12 @@
   },
   "operations": {
     "requests": 917,
-    "bytes": 30427131,
-    "p50_ms": 464,
-    "p95_ms": 1249
+    "bytes": 30431410,
+    "p50_ms": 453,
+    "p95_ms": 1142
   },
   "third_party_cost_usd": 0,
-  "runtime_seconds": 114.8,
+  "runtime_seconds": 113.1,
   "validation": {
     "passed": true,
     "checks": {
