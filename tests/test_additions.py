@@ -625,3 +625,11 @@ def test_holding_company_needs_the_exact_organisation_number() -> None:
     found, metrics = discover(profile, None, fetch=fetched, dns=lambda domain: domain == "cosma.no")
     assert found is None
     assert any(item.get("outcome") == "rejected_identity" for item in metrics["candidates"])
+
+
+def test_only_a_single_dated_article_page_counts_as_activity() -> None:
+    from norway_company_agent.claims import _is_article_page, _is_product_code
+    assert _is_article_page({"url": "https://a.no/nyheter/ny-avtale", "stated_dates": ["2026-01-02"]})
+    assert not _is_article_page({"url": "https://a.no/blogg/", "stated_dates": ["2026-01-02"]})  # top-level section page
+    assert not _is_article_page({"url": "https://a.no/blogs/nyheter", "stated_dates": ["2026-01-02", "2026-02-02"]})  # a listing: the dates belong to its items
+    assert _is_product_code("750P201T127") and not _is_product_code("Design Dialogues") and not _is_product_code("Nyhet 2026")

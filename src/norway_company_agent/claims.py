@@ -5,6 +5,8 @@ and a company site that did not pass the identity gate yields `ambiguous`, never
 """
 from __future__ import annotations
 
+import urllib.parse
+
 import re
 from typing import Any
 
@@ -153,12 +155,12 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
         activity = [(idx, page) for idx, page in enumerate(site.get("pages") or []) if page.get("kind") == "news"]
         dated = [(idx, {"title": item["title"], "url": item["url"], "date": item["date"]}) for idx, page in activity for item in page.get("news_items") or []]
         seen_urls = {item["url"] for _, item in dated}
-        dated += [(idx, {"title": (page.get("title") or "")[:300], "url": page.get("url"), "date": date}) for idx, page in activity for date in page.get("stated_dates") or [] if page.get("url") not in seen_urls]
+        dated += [(idx, {"title": (page.get("title") or "")[:300], "url": page.get("url"), "date": date}) for idx, page in activity if _is_article_page(page) for date in page["stated_dates"] if page.get("url") not in seen_urls]
         for idx, item in dated:
             claims.append(_claim("public_activity.dated_item", item, "available", CONFIDENCE["site"], [f"ev-site-{idx}"], effective_at=item["date"], source_note="company-owned"))
         seen_urls |= {item["url"] for _, item in dated}
         feed = site.get("feed") or {}
-        feed_news = [item for item in feed.get("items") or [] if item["url"] not in seen_urls]
+        feed_news = [item for item in feed.get("items") or [] if item["url"] not in seen_urls and not _is_product_code(item.get("title"))]
         if feed_news:
             evidence_rows.append({"id": "ev-feed", "source_url": feed.get("source_url"), "source_class": "company_owned", "retrieved_at": website.get("retrieved_at"), "content_sha256": feed.get("content_sha256"), "extraction_method": "rss_atom_feed"})
         for item in feed_news:
@@ -186,6 +188,18 @@ def _money(value: Any, currency: Any) -> str:
     except (TypeError, ValueError):
         return str(value)
     return f"{amount:,.0f} {currency or ''}".strip()
+
+
+def _is_article_page(page: dict[str, Any]) -> bool:
+    """A page's own date describes it only when it has one date and sits below a section: several dates or a top-level path mean a listing."""
+    depth = len([part for part in urllib.parse.urlparse(str(page.get("url") or "")).path.split("/") if part])
+    return len(page.get("stated_dates") or []) == 1 and depth >= 2
+
+
+def _is_product_code(title: Any) -> bool:
+    """A shop's product feed gives titles such as 750P201T127: dated, but not activity anyone would call news."""
+    text = str(title or "").strip()
+    return bool(text) and " " not in text and any(ch.isdigit() for ch in text) and text.upper() == text
 
 
 def _financial_sentences(claims: list[dict[str, Any]]) -> list[str]:
