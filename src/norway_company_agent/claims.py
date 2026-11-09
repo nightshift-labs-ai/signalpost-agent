@@ -5,6 +5,7 @@ and a company site that did not pass the identity gate yields `ambiguous`, never
 """
 from __future__ import annotations
 
+import json
 import re
 import urllib.parse
 from typing import Any
@@ -17,6 +18,17 @@ OFFICIAL_MODULES = ("registry_live", "financials", "financial_history", "roles",
 PLATFORMS = ("linkedin", "facebook", "instagram", "youtube", "x", "tiktok")
 CONFIDENCE = {"official": 0.99, "site": 0.9}
 EXTRACTION_METHOD = {"registry": "brreg_bulk_csv", "accounting_obligation": "rule_from_registry_row", "website": "html_fetch"}
+# Where a published value sits in the JSON body at its evidence row's source_url (JSONPath).
+REGISTRY_SELECTORS = {"legal_name": "$.navn", "legal_form": "$.organisasjonsform.kode", "registered_employees": "$.antallAnsatte", "business_address": "$.forretningsadresse", "industry": "$.naeringskode1"}
+FINANCIAL_SELECTORS = {
+    "revenue": "resultatregnskapResultat.driftsresultat.driftsinntekter.sumDriftsinntekter",
+    "operating_result": "resultatregnskapResultat.driftsresultat.driftsresultat",
+    "profit_before_tax": "resultatregnskapResultat.ordinaertResultatFoerSkattekostnad",
+    "annual_result": "resultatregnskapResultat.aarsresultat",
+    "assets": "eiendeler.sumEiendeler",
+    "equity": "egenkapitalGjeld.egenkapital.sumEgenkapital",
+    "debt": "egenkapitalGjeld.gjeldOversikt.sumGjeld",
+}
 BOILERPLATE = re.compile(r"powered by|just another wordpress|smugmug|squarespace|wix\.com|min nye (?:side|nettside)|coming soon|kommer snart", re.I)
 
 
@@ -57,6 +69,16 @@ def _claim(field: str, value: Any, availability: str, confidence: float | None, 
     return {"field": field, "value": value, "availability": availability, "confidence": confidence, "evidence_ids": evidence_ids, **extra}
 
 
+def _selected(selector: str | None) -> dict[str, str]:
+    """A claim's `selector` key, left out when the source gave nothing to point at."""
+    return {"selector": selector} if selector else {}
+
+
+def _by_key(prefix: str, key: str, value: Any, rest: str = "") -> str | None:
+    """JSONPath for the array element whose `key` equals `value`, which stays right if the source reorders the array."""
+    return f"{prefix}[?(@.{key}=={json.dumps(value, ensure_ascii=False)})]{rest}" if value not in (None, "") else None
+
+
 def _state_of(record: dict[str, Any] | None) -> str:
     return STATE.get((record or {}).get("status"), "failed")
 
@@ -71,13 +93,13 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
     state = _state_of(live)
     for field, key in (("legal_name", "name"), ("legal_form", "legal_form"), ("registered_employees", "employees"), ("business_address", "business_address"), ("industry", "industry")):
         present = value.get(key) not in (None, "", {})
-        claims.append(_claim(field, value.get(key) if present else None, ("available" if present else "not_available") if state == "available" else state, CONFIDENCE["official"] if present else None, ["ev-registry_live"]))
+        claims.append(_claim(field, value.get(key) if present else None, ("available" if present else "not_available") if state == "available" else state, CONFIDENCE["official"] if present else None, ["ev-registry_live"], **_selected(REGISTRY_SELECTORS[field] if present else None)))
 
     group_links = ((ev.get("group") or {}).get("value") or {}).get("children") or []
     for link in group_links:
         if str(link.get("organisasjonsnummer") or "") and str(link.get("organisasjonsnummer")) != str(profile.get("organisation_number")):
             relation = link.get("knytningsform") or {}
-            claims.append(_claim("group.link", {"organisation_number": link.get("organisasjonsnummer"), "name": link.get("navn"), "relationship": relation.get("beskrivelse"), "relationship_code": relation.get("kode"), "since": link.get("dato")}, "available", CONFIDENCE["official"], ["ev-group"]))
+            claims.append(_claim("group.link", {"organisation_number": link.get("organisasjonsnummer"), "name": link.get("navn"), "relationship": relation.get("beskrivelse"), "relationship_code": relation.get("kode"), "since": link.get("dato")}, "available", CONFIDENCE["official"], ["ev-group"], **_selected(_by_key("$.children", "organisasjonsnummer", link.get("organisasjonsnummer")))))
 
     fin = ev.get("financials") or {}
     rows = (fin.get("value") or {}).get("records") or []
@@ -86,7 +108,7 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
             period = row.get("period") or {}
             for field in ("revenue", "operating_result", "profit_before_tax", "annual_result", "assets", "equity", "debt"):
                 if row.get(field) is not None:
-                    claims.append(_claim(f"financials.{field}", row[field], "available", CONFIDENCE["official"], ["ev-financials"], currency=row.get("currency"), reporting_period=period, account_type=row.get("account_type")))
+                    claims.append(_claim(f"financials.{field}", row[field], "available", CONFIDENCE["official"], ["ev-financials"], currency=row.get("currency"), reporting_period=period, account_type=row.get("account_type"), **_selected(_by_key("$", "id", row.get("record_id"), "." + FINANCIAL_SELECTORS[field]))))
     else:
         claims.append(_claim("financials", None, "not_available" if _state_of(fin) == "available" else _state_of(fin), None, ["ev-financials"]))
 
@@ -98,7 +120,7 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
     roles = [r for r in ((roles_record.get("value") or {}).get("roles") or []) if not r.get("inactive") and r.get("name")]
     if roles:
         for role in roles:
-            claims.append(_claim("leadership.role", {"name": role["name"], "role": role.get("role"), "role_code": role.get("role_code"), "organisation_number": role.get("organisation_number")}, "available", CONFIDENCE["official"], ["ev-roles"], effective_at=role.get("last_changed")))
+            claims.append(_claim("leadership.role", {"name": role["name"], "role": role.get("role"), "role_code": role.get("role_code"), "organisation_number": role.get("organisation_number")}, "available", CONFIDENCE["official"], ["ev-roles"], effective_at=role.get("last_changed"), **_selected(role.get("source_path"))))
     else:
         claims.append(_claim("leadership.role", None, "not_available" if _state_of(roles_record) == "available" else _state_of(roles_record), None, ["ev-roles"]))
 
@@ -106,7 +128,7 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
     locations = (locations_record.get("value") or {}).get("locations") or []
     if locations:
         for item in locations:
-            claims.append(_claim("registered_workplace", item, "available", CONFIDENCE["official"], ["ev-locations"]))
+            claims.append(_claim("registered_workplace", item, "available", CONFIDENCE["official"], ["ev-locations"], **_selected(_by_key("$._embedded.underenheter", "organisasjonsnummer", item.get("organisation_number")))))
     else:
         claims.append(_claim("registered_workplace", None, "not_available" if _state_of(locations_record) == "available" else _state_of(locations_record), None, ["ev-locations"]))
 

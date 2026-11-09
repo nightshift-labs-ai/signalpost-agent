@@ -128,9 +128,9 @@ def _fetch_history(url: str) -> FetchResult:
 
 def normalize_roles(body: Any) -> dict[str, Any]:
     roles = []
-    for group in body.get("rollegrupper", []) if isinstance(body, dict) else []:
+    for group_index, group in enumerate(body.get("rollegrupper", []) if isinstance(body, dict) else []):
         changed = group.get("sistEndret")
-        for item in group.get("roller", []):
+        for role_index, item in enumerate(group.get("roller", [])):
             person = item.get("person") or {}
             name = person.get("navn") or {}
             entity = item.get("enhet") or {}
@@ -144,6 +144,7 @@ def normalize_roles(body: Any) -> dict[str, Any]:
                 "group": _get(group, "type", "beskrivelse"),
                 "last_changed": changed,
                 "inactive": bool(item.get("avregistrert")),
+                "source_path": f"$.rollegrupper[{group_index}].roller[{role_index}]",
             })
     return {"roles": roles}
 

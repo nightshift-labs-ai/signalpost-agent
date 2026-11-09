@@ -766,3 +766,22 @@ def test_change_text_shows_an_address_as_a_postal_address():
     from norway_company_agent.changes import _short
     value = {"adresse": ["Tomtebu 2"], "kommune": "VIK", "kommunenummer": "4639", "land": "Norge", "landkode": "NO", "postnummer": "6893", "poststed": "VIK I SOGN"}
     assert _short(value) == "Tomtebu 2, 6893 VIK I SOGN"
+
+
+def test_official_claims_point_at_their_place_in_the_source():
+    from norway_company_agent.official import normalize_roles
+    roles = normalize_roles({"rollegrupper": [{"type": {"kode": "STYR"}, "roller": [{"type": {"kode": "LEDE"}, "person": {"navn": {"fornavn": "A", "etternavn": "B"}}}, {"type": {"kode": "MEDL"}, "person": {"navn": {"fornavn": "C", "etternavn": "D"}}}]}]})
+    profile = {"organisation_number": "1", "name": "X", "evidence": {
+        "registry_live": {"status": "available", "value": {"name": "X AS", "legal_form": "AS", "employees": None}},
+        "financials": {"status": "available", "value": {"records": [{"record_id": 7, "period": {"tilDato": "2025-12-31"}, "revenue": 5, "account_type": "SELSKAP"}]}},
+        "roles": {"status": "available", "value": roles},
+        "locations": {"status": "available", "value": {"locations": [{"organisation_number": "9", "name": "Y"}]}},
+    }}
+    claims = build_claims(profile)[0]
+    by_field = {claim["field"]: claim for claim in claims if claim["field"] != "leadership.role"}
+    assert by_field["legal_name"]["selector"] == "$.navn"
+    assert "selector" not in by_field["registered_employees"]
+    assert by_field["financials.revenue"]["selector"] == "$[?(@.id==7)].resultatregnskapResultat.driftsresultat.driftsinntekter.sumDriftsinntekter"
+    assert by_field["registered_workplace"]["selector"] == '$._embedded.underenheter[?(@.organisasjonsnummer=="9")]'
+    assert [claim["selector"] for claim in claims if claim["field"] == "leadership.role"] == ["$.rollegrupper[0].roller[0]", "$.rollegrupper[0].roller[1]"]
+    assert all("source_path" not in claim["value"] for claim in claims if claim["field"] == "leadership.role")
