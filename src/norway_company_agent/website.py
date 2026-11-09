@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import html as html_module
 import json
 import ipaddress
@@ -198,6 +199,15 @@ def _looks_like_job_title(text: str) -> bool:
     return 1 <= len(words) <= 8 and len(text) <= 90 and text[-1] not in ".!?:;," and not NOT_A_TITLE_START.match(text) and not NOT_A_TITLE_WORD.search(text) and bool(JOB_TITLE_WORD.search(text))
 
 
+BULK_LASTMOD_ITEMS = 4  # this many posts sharing one sitemap lastmod is a rebuild or migration stamp, not a publication date
+
+
+def _without_bulk_lastmod(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A lastmod shared by several posts says when the site was rebuilt, so those posts have no usable date. Dates in the URL are kept."""
+    stamped = collections.Counter(item["date"] for item in items if item.get("date_basis") == "sitemap_lastmod")
+    return [item for item in items if item.get("date_basis") != "sitemap_lastmod" or stamped[item["date"]] < BULK_LASTMOD_ITEMS]
+
+
 LISTING_TITLES = {"personvern", "informasjonskapsler", "cookies", "privacy", "vilkar", "kontakt", "om oss", "news", "nyheter", "nyhet", "blog", "blogg", "bloggen", "aktuelt", "artikler", "karriere", "career", "careers", "jobb", "jobs", "stillinger", "ledige stillinger", "jobb hos oss", "kontakt oss", "hello world", "sample page", "eksempelside"}
 NOT_NEWS_PATH = re.compile(r"/(?:portfolio|portefolje|referanser?|prosjekter|products?|produkter?|shop|butikk|category|categories|kategori|kategorier|tags?|stikkord|author|forfatter)(?:/|$)|^(?:/[a-z]{2}(?:-[a-z]{2})?)?/blogs/[^/]+/?$", re.I)
 
@@ -367,8 +377,9 @@ def sitemap_items(home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
             continue
         if depth >= 2 and (kind == "jobs" or JOB_PATH.search(path)) and _is_job_link(title, path) and len(result["jobs"]) < MAX_SITEMAP_ITEMS:
             result["jobs"].append({"title": title, "date_posted": None, "valid_through": None, "source_url": source, "posting_url": url, "sitemap_lastmod": lastmod, "date_basis": basis})
-        elif lastmod and depth >= 1 and (kind == "news" or (depth >= 2 and NEWS_PATH.search(path))) and not NOT_NEWS_PATH.search(path) and not re.fullmatch(r"(?=\S*\d)(?=\S*[^\W\d_])\S+", title) and len(result["news"]) < MAX_SITEMAP_ITEMS:
+        elif lastmod and depth >= 1 and (kind == "news" or (depth >= 2 and NEWS_PATH.search(path))) and not NOT_NEWS_PATH.search(path) and not re.fullmatch(r"(?=\S*\d)(?=\S*[^\W\d_])\S+", title):
             result["news"].append({"title": title, "url": url, "date": lastmod, "source_url": source, "date_basis": basis})
+    result["news"] = _without_bulk_lastmod(result["news"])[:MAX_SITEMAP_ITEMS]
     return result
 
 

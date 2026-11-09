@@ -684,6 +684,14 @@ def test_theme_post_types_listing_pages_and_contact_pages_are_not_activity() -> 
     assert [item["url"] for item in news_items(BeautifulSoup(html, "html.parser"), "https://a.no/aktuelt/")] == ["https://a.no/aktuelt/ny-sak/"]
 
 
+def test_posts_sharing_one_sitemap_lastmod_have_no_usable_date() -> None:
+    from norway_company_agent.website import _without_bulk_lastmod
+    bulk = [{"date": "2024-03-20", "date_basis": "sitemap_lastmod", "url": f"https://a.no/{i}"} for i in range(4)]
+    few = [{"date": "2024-05-01", "date_basis": "sitemap_lastmod", "url": f"https://a.no/x{i}"} for i in range(3)]
+    in_url = [{"date": "2024-03-20", "date_basis": "date_in_url", "url": "https://a.no/2024/03/20/sak"}]
+    assert _without_bulk_lastmod(bulk + few + in_url) == few + in_url
+
+
 def test_product_codes_and_shop_blog_indexes_stay_out_of_activity() -> None:
     import re
     from norway_company_agent.claims import _is_product_code
