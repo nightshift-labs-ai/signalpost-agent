@@ -165,6 +165,7 @@ def normalize_entity(body: Any) -> dict[str, Any]:
         "website": body.get("hjemmeside"),
         "email": body.get("epostadresse"),
         "in_group": body.get("erIKonsern"),
+        "registered_purpose": " ".join(str(line).strip() for line in (body.get("aktivitet") or []) if str(line).strip()) or None,
         "industry": body.get("naeringskode1"),
         "business_address": body.get("forretningsadresse"),
         "postal_address": body.get("postadresse"),

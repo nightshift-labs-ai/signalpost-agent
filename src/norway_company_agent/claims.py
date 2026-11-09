@@ -109,7 +109,7 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
         found = {item["platform"]: item["url"] for item in site.get("social_links") or []}
         for platform in PLATFORMS:
             claims.append(_claim(f"company_profile.{platform}", found.get(platform), "available" if platform in found else "not_available", CONFIDENCE["site"] if platform in found else None, ["ev-website"]))
-        jobs = [(idx, job) for idx, page in enumerate(site.get("pages") or []) for job in page.get("job_postings") or []]
+        jobs = [(idx, job) for idx, page in enumerate(site.get("pages") or []) for job in [*(page.get("job_postings") or []), *(page.get("listed_jobs") or [])]]
         for idx, job in jobs:
             claims.append(_claim("hiring.job_posting", job, "available", CONFIDENCE["site"], [f"ev-site-{idx}"], effective_at=job.get("date_posted")))
         job_pages = [idx for idx, page in enumerate(site.get("pages") or []) if page.get("kind") == "jobs"]
@@ -119,9 +119,11 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
             page = site["pages"][job_pages[0]]
             claims.append(_claim("hiring.careers_page", page.get("url"), "available", CONFIDENCE["site"], [f"ev-site-{job_pages[0]}"]))
         activity = [(idx, page) for idx, page in enumerate(site.get("pages") or []) if page.get("kind") == "news"]
-        dated = [(idx, page, date) for idx, page in activity for date in page.get("stated_dates") or []]
-        for idx, page, date in dated:
-            claims.append(_claim("public_activity.dated_item", {"title": (page.get("title") or "")[:300], "url": page.get("url"), "date": date}, "available", CONFIDENCE["site"], [f"ev-site-{idx}"], effective_at=date, source_note="company-owned"))
+        dated = [(idx, {"title": item["title"], "url": item["url"], "date": item["date"]}) for idx, page in activity for item in page.get("news_items") or []]
+        seen_urls = {item["url"] for _, item in dated}
+        dated += [(idx, {"title": (page.get("title") or "")[:300], "url": page.get("url"), "date": date}) for idx, page in activity for date in page.get("stated_dates") or [] if page.get("url") not in seen_urls]
+        for idx, item in dated:
+            claims.append(_claim("public_activity.dated_item", item, "available", CONFIDENCE["site"], [f"ev-site-{idx}"], effective_at=item["date"], source_note="company-owned"))
         if not dated:
             claims.append(_claim("public_activity.dated_item", None, "not_available", None, [f"ev-site-{idx}" for idx, _ in activity] or ["ev-website"]))
     else:
@@ -132,18 +134,47 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
     return claims, evidence_rows, build_summary(profile, claims, publishable)
 
 
-def build_summary(profile: dict[str, Any], claims: list[dict[str, Any]], publishable: bool) -> str:
+def _money(value: Any, currency: Any) -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{amount:,.0f} {currency or ''}".strip()
+
+
+def build_summary(profile: dict[str, Any], claims: list[dict[str, Any]], publishable: bool) -> dict[str, Any]:
+    """A deterministic summary. Each sentence names the evidence behind it; nothing is inferred."""
     live = (profile.get("evidence") or {}).get("registry_live", {}).get("value") or {}
-    industry = (live.get("industry") or {}).get("beskrivelse") or profile.get("industry_label") or "unstated activity"
-    parts = [f"{profile.get('name')} is a {profile.get('legal_form') or 'registered'} entity registered under '{industry}'."]
+    industry = (live.get("industry") or {}).get("beskrivelse") or profile.get("industry_label")
+    legal_form = profile.get("legal_form") or live.get("legal_form") or "entity"
+    sentences: list[dict[str, Any]] = []
+
+    def say(text: str, *evidence_ids: str) -> None:
+        sentences.append({"text": text, "evidence_ids": list(evidence_ids)})
+
+    say(f"{profile.get('name')} is a Norwegian {legal_form}" + (f" registered under the industry '{industry}'." if industry else "."), "ev-registry_live")
+    if live.get("registered_purpose"):
+        say(f"Its registered purpose is: {live['registered_purpose'][:280]}", "ev-registry_live")
     if live.get("employees") is not None:
-        parts.append(f"It reports {live['employees']} registered employees.")
+        say(f"It reports {live['employees']} employees in the registry.", "ev-registry_live")
     for claim in claims:
         if claim["field"] == "financials.revenue":
-            parts.append(f"Latest filed revenue: {claim['value']} {claim.get('currency') or ''} (period {(claim.get('reporting_period') or {}).get('tilDato', 'as filed')}).".replace("  ", " "))
+            period = (claim.get("reporting_period") or {}).get("tilDato") or "the latest filed year"
+            line = f"Filed revenue for the period ending {period} was {_money(claim['value'], claim.get('currency'))}"
+            result = next((c for c in claims if c["field"] == "financials.annual_result" and c.get("reporting_period") == claim.get("reporting_period")), None)
+            say(line + (f", with an annual result of {_money(result['value'], result.get('currency'))}." if result else "."), "ev-financials")
             break
+    leader = next((c["value"] for c in claims if c["field"] == "leadership.role" and isinstance(c.get("value"), dict) and c["value"].get("role_code") == "DAGL"), None) or next((c["value"] for c in claims if c["field"] == "leadership.role" and isinstance(c.get("value"), dict) and c["value"].get("role_code") == "LEDE"), None)
+    if leader:
+        say(f"{leader.get('name')} is registered as {str(leader.get('role') or 'a role holder').lower()}.", "ev-roles")
+    workplaces = sum(1 for c in claims if c["field"] == "registered_workplace" and c["availability"] == "available")
+    if workplaces:
+        say(f"It has {workplaces} registered workplace(s).", "ev-locations")
     website = next((c for c in claims if c["field"] == "official_website"), {})
-    parts.append(f"Official website: {website.get('value')}." if publishable else "No website could be confirmed as this exact entity, so no site-based facts are published.")
+    if publishable:
+        say(f"Its official website is {website.get('value')}, confirmed by: {'; '.join(website.get('identity_reasons') or ['site identity checks'])}.", "ev-website")
+    else:
+        say("No website could be confirmed as this exact entity, so no site-based facts are published.", "ev-website")
     gaps = sorted({c["field"].split(".")[0] for c in claims if c["availability"] != "available"})
-    parts.append("Not confirmed: " + (", ".join(gaps) if gaps else "nothing in the checked fields") + ".")
-    return " ".join(parts)
+    say("Not confirmed in the checked sources: " + (", ".join(gaps) if gaps else "nothing") + ".")
+    return {"text": " ".join(item["text"] for item in sentences), "sentences": sentences}

@@ -16,6 +16,7 @@ from norway_company_agent.identity import apply_website_identity_gate  # noqa: E
 from norway_company_agent.official import fetch_official_modules  # noqa: E402
 from norway_company_agent.website import fetch_website  # noqa: E402
 from norway_company_agent.discover_site import discover  # noqa: E402
+from norway_company_agent.changes import apply_previous  # noqa: E402
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -39,6 +40,7 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--checkpoint-every", type=int, default=25)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--previous", help="Envelope JSONL from an earlier run; enables the refresh diff")
     parser.add_argument("--modules", default="registry,accounting_obligation,registry_live,financials,roles,group,locations,website")
     args = parser.parse_args()
 
@@ -63,13 +65,17 @@ def main() -> None:
         website_metrics = {"requests": 0, "bytes": 0, "latencies_ms": []}
         if "website" in requested_modules:
             org = profile["organisation_number"]
-            website_record, website_metrics = fetch_website(profile.get("website"), org=org)
+            live = (profile["evidence"].get("registry_live") or {}).get("value") or {}
+            address = live.get("business_address") or {}
+            street_lines = address.get("adresse") or []
+            street = next((word for line in street_lines for word in str(line).split() if len(word) >= 4 and not word[0].isdigit()), "")
+            hints = {"postcode": address.get("postnummer"), "street": street}
+            website_record, website_metrics = fetch_website(profile.get("website"), org=org, hints=hints)
             gated = apply_website_identity_gate(profile, website_record)["website"]
             profile["evidence"]["website"] = gated
             publishable = ((gated.get("value") or {}).get("identity_assessment") or {}).get("publishable")
             if not publishable:
-                live = (profile["evidence"].get("registry_live") or {}).get("value") or {}
-                found, discovery_metrics = discover(profile, live.get("email"), fetch=lambda url: fetch_website(url, org=org))
+                found, discovery_metrics = discover(profile, live.get("email"), fetch=lambda url: fetch_website(url, org=org, hints=hints))
                 website_metrics["requests"] += discovery_metrics["requests"]
                 website_metrics["bytes"] += discovery_metrics["bytes"]
                 website_metrics["latencies_ms"] += discovery_metrics["latencies_ms"]
@@ -116,6 +122,10 @@ def main() -> None:
         terminal_envelope(profile, run_id=args.run_id, modules=requested_modules, started_at=started_at, completed_at=completed_at)
         for profile in ordered_profiles
     ]
+    previous = {}
+    if args.previous and Path(args.previous).exists():
+        previous = {row["organisation_number"]: row for row in (json.loads(line) for line in Path(args.previous).read_text(encoding="utf-8").splitlines() if line.strip())}
+    envelopes = [apply_previous(item, previous.get(item["organisation_number"])) for item in envelopes]
     validation = validate_envelopes(envelopes, args.expected_count)
     write_jsonl(profiles_output, ordered_profiles)
     write_jsonl(Path(args.output), envelopes)

@@ -2,8 +2,10 @@
 
 Candidates come only from registry data: the domain of the registered email address, then domains
 derived from the legal name. A candidate is a guess until the fetched site proves it: publication
-requires the exact organisation number on the site (any candidate) or, for the registered-email
-domain only, all legal-name tokens in the homepage identity text. Search rank is never evidence.
+requires the exact organisation number on the site; or, for the registered-email domain, a domain
+label equal to the joined legal-name tokens or all legal-name tokens (a matching address is not enough there: the domain may belong to the company's
+accountant); or, for a name-derived domain, the registered address together with all legal-name
+tokens. Search rank is never evidence.
 """
 from __future__ import annotations
 
@@ -95,11 +97,18 @@ def discover(
         gated = apply_website_identity_gate(profile, record)["website"]
         assessment = (gated.get("value") or {}).get("identity_assessment") or {}
         proven = _org_number_proven(gated, org)
-        accepted = proven or (origin == "registered_email_domain" and assessment.get("publishable"))
-        metrics["candidates"].append({"domain": candidate, "origin": origin, "outcome": "accepted" if accepted else "rejected_identity", "org_number_on_site": proven})
+        address = bool((gated.get("value") or {}).get("registered_address_found_at"))
+        all_name_tokens = float(assessment.get("score") or 0) >= 0.95
+        if origin == "registered_email_domain":
+            label = candidate.split(".")[0].replace("-", "")
+            name_is_domain = label == "".join(_ascii_tokens(str(profile.get("name") or "")))
+            accepted = proven or name_is_domain or bool(assessment.get("publishable"))  # address alone is not enough: holding companies often register c/o their accountant, whose email domain this may be
+        else:
+            accepted = proven or (address and all_name_tokens)
+        metrics["candidates"].append({"domain": candidate, "origin": origin, "outcome": "accepted" if accepted else "rejected_identity", "org_number_on_site": proven, "registered_address_on_site": address, "identity_score": assessment.get("score")})
         if accepted:
             value = gated["value"]
-            value["discovery"] = {"origin": origin, "candidate": candidate, "org_number_on_site": proven, "method": "registry_derived_candidate_v1"}
+            value["discovery"] = {"origin": origin, "candidate": candidate, "org_number_on_site": proven, "registered_address_on_site": address, "method": "registry_derived_candidate_v2"}
             value["identity_assessment"] = {**assessment, "publishable": True, "status": "exact"}
             return gated, metrics
     return None, metrics

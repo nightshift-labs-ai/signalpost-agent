@@ -52,6 +52,20 @@ def find_org_number(text: str, org: str | None) -> str | None:
     return None
 
 
+def find_address(text: str, hints: dict[str, Any] | None) -> str | None:
+    """Excerpt where the registered postcode and street name occur close together, or None."""
+    postcode = str((hints or {}).get("postcode") or "")
+    street = str((hints or {}).get("street") or "").casefold()
+    if not re.fullmatch(r"\d{4}", postcode) or len(street) < 4:
+        return None
+    lowered = text.casefold()
+    for match in re.finditer(r"(?<!\d)" + postcode + r"(?!\d)", lowered):
+        window = lowered[max(0, match.start() - 120):match.end() + 40]
+        if street in window:
+            return " ".join(text[max(0, match.start() - 80):match.end() + 40].split())
+    return None
+
+
 def _page_dates(html_metadata: dict[str, Any], soup: BeautifulSoup) -> list[str]:
     """Publication dates the page states about itself; never inferred from the crawl time."""
     found: list[str] = []
@@ -72,6 +86,51 @@ def _page_dates(html_metadata: dict[str, Any], soup: BeautifulSoup) -> list[str]
 
     walk(html_metadata.get("json-ld", []))
     return sorted({item[:10] for item in found if re.match(r"^\d{4}-\d{2}-\d{2}", item)})
+
+
+def listed_jobs(soup: BeautifulSoup, page_url: str) -> list[dict[str, Any]]:
+    """Job links on a careers page: deeper same-host paths with a real title, not navigation."""
+    base = urllib.parse.urlparse(page_url)
+    base_depth = len([part for part in base.path.split("/") if part])
+    found: dict[str, dict[str, Any]] = {}
+    for anchor in soup.select("main a[href], article a[href], section a[href]"):
+        url = urllib.parse.urljoin(page_url, str(anchor.get("href") or "").strip())
+        parsed = urllib.parse.urlparse(url)
+        title = " ".join(anchor.get_text(" ", strip=True).split())
+        depth = len([part for part in parsed.path.split("/") if part])
+        if parsed.netloc != base.netloc or depth <= base_depth or not JOB_PATH.search(parsed.path):
+            continue
+        if len(title.split()) < 2 or len(title) > 200 or re.search(r"se alle|ledige stillinger|les mer|søk her", title, re.I):
+            continue
+        found[url.split("#")[0]] = {"title": title, "date_posted": None, "valid_through": None, "source_url": page_url, "posting_url": url.split("#")[0]}
+    return list(found.values())[:30]
+
+
+def news_items(soup: BeautifulSoup, page_url: str) -> list[dict[str, Any]]:
+    """Dated items on a news listing: a block holding both a machine-readable date and a same-host link."""
+    host = urllib.parse.urlparse(page_url).netloc
+    found: dict[str, dict[str, Any]] = {}
+    for time_tag in soup.select("time[datetime]")[:60]:
+        date = str(time_tag.get("datetime") or "")[:10]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            continue
+        block = time_tag
+        anchor = None
+        for _ in range(4):
+            block = block.parent
+            if block is None:
+                break
+            anchor = block.select_one("a[href]")
+            if anchor:
+                break
+        if not anchor:
+            continue
+        url = urllib.parse.urljoin(page_url, str(anchor.get("href") or "").strip()).split("#")[0]
+        title = " ".join(anchor.get_text(" ", strip=True).split())
+        if urllib.parse.urlparse(url).netloc != host or len(title) < 8:
+            continue
+        found[url] = {"title": title[:300], "url": url, "date": date, "source_url": page_url}
+    return list(found.values())[:30]
 
 
 def job_postings(html_metadata: dict[str, Any], page_url: str) -> list[dict[str, Any]]:
@@ -267,7 +326,7 @@ def _priority_links(base_url: str, soup: BeautifulSoup, limit: int = MAX_SECONDA
     return [url for url, _ in sorted(candidates.items(), key=lambda item: (item[1], item[0]))[:limit]]
 
 
-def _fetch_secondary_page(url: str, *, homepage_domain: str, timeout: float, max_bytes: int, org: str | None = None) -> tuple[dict[str, Any] | None, list[dict[str, str]], int, int, int, str | None]:
+def _fetch_secondary_page(url: str, *, homepage_domain: str, timeout: float, max_bytes: int, org: str | None = None, hints: dict[str, Any] | None = None) -> tuple[dict[str, Any] | None, list[dict[str, str]], int, int, int, str | None]:
     if not _robots_allowed(url, timeout):
         return None, [], 1, 0, 0, "robots.txt disallows page"
     started = time.monotonic()
@@ -296,7 +355,10 @@ def _fetch_secondary_page(url: str, *, homepage_domain: str, timeout: float, max
             "stated_dates": _page_dates(page_metadata, page_soup),
             "job_postings": job_postings(page_metadata, final_url),
             "kind": "jobs" if JOB_PATH.search(final_url) else "news" if NEWS_PATH.search(urllib.parse.urlparse(final_url).path) else "other",
+            "listed_jobs": listed_jobs(page_soup, final_url) if JOB_PATH.search(final_url) else [],
+            "news_items": news_items(page_soup, final_url) if NEWS_PATH.search(urllib.parse.urlparse(final_url).path) else [],
             "org_number_excerpt": find_org_number(page_soup.get_text(" ", strip=True), org),
+            "address_excerpt": find_address(page_soup.get_text(" ", strip=True), hints),
         }
         return page, _social_links(final_url, page_soup), 2, len(raw), elapsed, None
     except Exception as exc:
@@ -326,7 +388,7 @@ def _extraction_state(text: str, soup: BeautifulSoup) -> str:
     return "js_fallback_candidate" if len(text.strip()) < 100 and len(soup.select("script[src]")) >= 2 else "static_complete"
 
 
-def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_000_000, org: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_000_000, org: str | None = None, hints: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     supplied_url = str(url or "").strip()
     supplied_scheme = bool(re.match(r"^https?://", supplied_url, re.I))
     normalized = normalize_homepage(url)
@@ -335,7 +397,8 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
     try:
         assert_public_url(normalized)
     except ValueError as exc:
-        return evidence("website", "blocked", "registry_linked_company_website", normalized, note=str(exc)), {"requests": 0, "bytes": 0, "latencies_ms": []}
+        status = "not_found" if "resolve" in str(exc) else "blocked"  # a dead domain did not refuse us
+        return evidence("website", status, "registry_linked_company_website", normalized, note=str(exc)), {"requests": 0, "bytes": 0, "latencies_ms": []}
     if not _robots_allowed(normalized, timeout):
         return evidence("website", "blocked", "registry_linked_company_website", normalized, note="robots.txt disallows this user agent"), {"requests": 1, "bytes": 0, "latencies_ms": []}
     started = time.monotonic()
@@ -371,7 +434,7 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             "extraction_state": _extraction_state(text, soup),
         }
         home_proof = find_org_number(soup.get_text(" ", strip=True), org)
-        pages = [{"url": final_url, "title": title[:500], "main_text_excerpt": text[:5000], "content_sha256": value["content_sha256"], "stated_dates": _page_dates(structured, soup), "job_postings": job_postings(structured, final_url), "kind": "home", "org_number_excerpt": home_proof}]
+        pages = [{"url": final_url, "title": title[:500], "main_text_excerpt": text[:5000], "content_sha256": value["content_sha256"], "stated_dates": _page_dates(structured, soup), "job_postings": job_postings(structured, final_url), "kind": "home", "org_number_excerpt": home_proof, "address_excerpt": find_address(soup.get_text(" ", strip=True), hints)}]
         social = value["social_links"]
         crawl_errors = []
         requests = 2
@@ -385,6 +448,7 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
                 timeout=timeout,
                 max_bytes=min(max_bytes, 1_000_000),
                 org=org,
+                hints=hints,
             )
             requests += page_requests
             bytes_received += page_bytes
@@ -396,6 +460,10 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             elif page_error:
                 crawl_errors.append({"url": page_url, "error": page_error})
         value["pages"] = pages
+        address_page = next((page for page in pages if page.get("address_excerpt")), None)
+        if address_page:
+            value["registered_address_found_at"] = address_page["url"]
+            value["registered_address_excerpt"] = address_page["address_excerpt"]
         proof_page = next((page for page in pages if page.get("org_number_excerpt")), None)
         if proof_page:
             value["org_number_found"] = org
@@ -411,7 +479,7 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
     except urllib.error.URLError as exc:
         if not supplied_scheme and normalized.startswith("https://"):
             first_elapsed = int((time.monotonic() - started) * 1000)
-            record, metrics = fetch_website("http://" + supplied_url, timeout=timeout, max_bytes=max_bytes)
+            record, metrics = fetch_website("http://" + supplied_url, timeout=timeout, max_bytes=max_bytes, org=org, hints=hints)
             metrics["requests"] += 2
             metrics["latencies_ms"].insert(0, first_elapsed)
             return record, metrics

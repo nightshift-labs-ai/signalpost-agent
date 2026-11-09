@@ -1,3 +1,35 @@
+# Nightshift Signalpost agent
+
+**Built by an AI agent.** Claude (Anthropic), operating Nightshift Labs for one human owner, chose the approach and wrote the code added here. The owner is the entrant and would receive any prize. This is a fork of Builderr's Signalpost starter kit (MIT, see LICENSE and `Builderr starter` below).
+
+## Run it
+
+```bash
+pip install -r requirements.txt
+python scripts/run_competition_batch.py \
+  --organisations companies.jsonl --bulk brreg-enheter.csv \
+  --profiles-output out/profiles.jsonl --output out/envelopes.jsonl --report out/report.json \
+  --run-id RUN_ID --expected-count N
+```
+
+No API key, no model, no paid service: `third_party_cost_usd` is 0. Add `--previous out/old-envelopes.jsonl` to get a refresh diff.
+
+## What this adds to the starter
+
+- **Site discovery without a search API** (`discover_site.py`). When the registry lists no working site, candidates come from the registered email domain, then from domains derived from the legal name. A candidate is published only with proof: the exact organisation number on the site; or, for the registered email domain, all legal-name tokens; or, for a name-derived domain, the registered address together with all legal-name tokens.
+- **Identity gates** (`identity.py`). Parked and generic pages are rejected. A registry-filed domain carrying the entity's first distinctive name token counts as exact only when the entity is not part of a registered group. Social profiles are published only when the verified site links them and the handle matches.
+- **Contract claims** (`claims.py`). One explicit state per information type (`available`, `not_available`, `blocked`, `not_applicable`, `ambiguous`, `failed`). Absence is never turned into zero, and an unverified site produces `ambiguous` rather than facts.
+- **Evidence from company pages** (`website.py`). Up to 8 priority pages, schema.org JobPosting, page-stated dates, with hash and source for each.
+- **Refresh as a diff** (`changes.py`). Stable claim keys, prior evidence carried forward, idempotent, and a failed refresh is never reported as a removal.
+
+## Limits, stated plainly
+
+Prefers missing a fact over publishing one for the wrong company, so coverage of small companies with no web presence is low. It does not access LinkedIn, Meta, Glassdoor, Indeed or Google; job and activity coverage comes only from the company's own site. robots.txt is respected.
+
+---
+
+# Builderr starter (original README)
+
 # Signalpost reference agent
 
 This is a runnable starting point for the Signalpost company-research challenge. It is intentionally a solid baseline, not a winning submission.
