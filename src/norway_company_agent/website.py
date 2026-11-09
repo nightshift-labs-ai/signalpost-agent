@@ -198,7 +198,8 @@ def _looks_like_job_title(text: str) -> bool:
     return 1 <= len(words) <= 8 and len(text) <= 90 and text[-1] not in ".!?:;," and not NOT_A_TITLE_START.match(text) and not NOT_A_TITLE_WORD.search(text) and bool(JOB_TITLE_WORD.search(text))
 
 
-NOT_NEWS_PATH = re.compile(r"/(?:portfolio|portefolje|referanser?|prosjekter|products?|produkter?|shop|butikk)(?:/|$)|^(?:/[a-z]{2}(?:-[a-z]{2})?)?/blogs/[^/]+/?$", re.I)
+LISTING_TITLES = {"personvern", "informasjonskapsler", "cookies", "privacy", "vilkar", "kontakt", "om oss", "news", "nyheter", "nyhet", "blog", "blogg", "bloggen", "aktuelt", "artikler", "karriere", "career", "careers", "jobb", "jobs", "stillinger", "ledige stillinger", "jobb hos oss", "kontakt oss", "hello world", "sample page", "eksempelside"}
+NOT_NEWS_PATH = re.compile(r"/(?:portfolio|portefolje|referanser?|prosjekter|products?|produkter?|shop|butikk|category|categories|kategori|kategorier|tags?|stikkord|author|forfatter)(?:/|$)|^(?:/[a-z]{2}(?:-[a-z]{2})?)?/blogs/[^/]+/?$", re.I)
 
 
 def _no_xml_declaration(html: str) -> str:
@@ -236,13 +237,23 @@ def news_items(soup: BeautifulSoup, page_url: str) -> list[dict[str, Any]]:
             continue
         url = urllib.parse.urljoin(page_url, str(anchor.get("href") or "").strip()).split("#")[0]
         title = " ".join(anchor.get_text(" ", strip=True).split())
-        if urllib.parse.urlparse(url).netloc != host or len(title) < 8:
+        if urllib.parse.urlparse(url).netloc != host or len(title) < 8 or title.casefold() in LISTING_TITLES:
             continue
         found[url] = {"title": title[:300], "url": url, "date": date, "source_url": page_url}
     return list(found.values())[:30]
 
 
 SITEMAP_CHILD = re.compile(r"nyhet|news|post|blog|artik|aktuelt|karriere|career|jobb|stilling", re.I)
+NEWS_SITEMAP_TYPE_WORDS = {"post", "posts", "nyhet", "nyheter", "news", "blog", "blogg", "artikkel", "artikler", "aktuelt", "karriere", "career", "careers", "jobb", "jobs", "stilling", "stillinger"}
+
+
+def _sitemap_child_is_news(url: str) -> bool:
+    """A child sitemap named after a WordPress post type counts only for real post types, not popups, blocks or gallery items."""
+    name = urllib.parse.urlparse(url).path.rsplit("/", 1)[-1].casefold()
+    match = re.fullmatch(r"wp-sitemap-posts-([a-z0-9_-]+?)-\d+\.xml", name) or re.fullmatch(r"([a-z0-9_-]+?)-sitemap\d*\.xml", name)
+    return not match or set(re.split(r"[-_]", match.group(1))) <= NEWS_SITEMAP_TYPE_WORDS
+
+
 SITEMAP_NOT_NEWS = re.compile(r"page|categor|tag|author|product|taxonom", re.I)  # WordPress also publishes wp-sitemap-posts-page-1.xml
 MAX_SITEMAP_ITEMS = 12
 MAX_FEED_ITEMS = 30
@@ -324,7 +335,7 @@ def sitemap_items(home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
         result.update({"source_url": root_sitemap, "content_sha256": digest})
         documents: list[tuple[str, str | None, str, str | None]] = [(text, None, root_sitemap, digest)]
         if "<sitemapindex" in text:
-            children = [item for item in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text) if SITEMAP_CHILD.search(item) and not SITEMAP_NOT_NEWS.search(item)][:3]
+            children = [item for item in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text) if SITEMAP_CHILD.search(item) and not SITEMAP_NOT_NEWS.search(item) and _sitemap_child_is_news(item)][:3]
             documents = []
             for child in children:
                 if _registered_domain(child) != domain:
@@ -343,7 +354,6 @@ def sitemap_items(home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
     except Exception:
         return result
     entries.sort(key=lambda item: item[1] or "", reverse=True)
-    listing_titles = {"personvern", "informasjonskapsler", "cookies", "privacy", "vilkar", "kontakt", "om oss", "news", "nyheter", "nyhet", "blog", "blogg", "bloggen", "aktuelt", "artikler", "karriere", "career", "careers", "jobb", "jobs", "stillinger", "ledige stillinger", "jobb hos oss"}
     for url, lastmod, kind, source in entries:
         path = urllib.parse.urlparse(url).path
         path_date = re.search(r"/(20\d{2})/(0?[1-9]|1[0-2])/(0?[1-9]|[12]\d|3[01])(?:/|$)", path)
@@ -353,7 +363,7 @@ def sitemap_items(home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
             basis = "date_in_url"
         depth = len([part for part in path.split("/") if part])
         title = re.sub(r"[-_]+", " ", urllib.parse.unquote(path.rstrip("/").rsplit("/", 1)[-1])).strip()
-        if title.casefold() in listing_titles or not title:
+        if title.casefold() in LISTING_TITLES or not title:
             continue
         if depth >= 2 and (kind == "jobs" or JOB_PATH.search(path)) and _is_job_link(title, path) and len(result["jobs"]) < MAX_SITEMAP_ITEMS:
             result["jobs"].append({"title": title, "date_posted": None, "valid_through": None, "source_url": source, "posting_url": url, "sitemap_lastmod": lastmod, "date_basis": basis})

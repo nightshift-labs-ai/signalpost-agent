@@ -671,6 +671,19 @@ def test_redirect_with_only_a_leader_name_is_not_enough() -> None:
     assert found is None
 
 
+def test_theme_post_types_listing_pages_and_contact_pages_are_not_activity() -> None:
+    from bs4 import BeautifulSoup
+    from norway_company_agent.website import NOT_NEWS_PATH, _sitemap_child_is_news, news_items
+    for name in ("wp-sitemap-posts-post-1.xml", "post-sitemap.xml", "post-sitemap2.xml", "blog-posts-sitemap.xml", "wp-sitemap-posts-nyheter-1.xml", "sitemap-news.xml"):
+        assert _sitemap_child_is_news("https://a.no/" + name), name
+    for name in ("wp-sitemap-posts-jet-popup-1.xml", "wp-sitemap-posts-blocks-1.xml", "wp-sitemap-posts-featured_item-1.xml", "special_post-sitemap.xml"):
+        assert not _sitemap_child_is_news("https://a.no/" + name), name
+    assert NOT_NEWS_PATH.search("/blog/category/kjemikalier") and NOT_NEWS_PATH.search("/nyheter/tag/bygg/")
+    assert not NOT_NEWS_PATH.search("/blog/post/ny-ozon-generator")
+    html = '<div><time datetime="2026-09-17">17</time><a href="/kontakt/">Kontakt oss</a></div><div><time datetime="2026-09-18">18</time><a href="/aktuelt/ny-sak/">En ny sak om bygg</a></div>'
+    assert [item["url"] for item in news_items(BeautifulSoup(html, "html.parser"), "https://a.no/aktuelt/")] == ["https://a.no/aktuelt/ny-sak/"]
+
+
 def test_product_codes_and_shop_blog_indexes_stay_out_of_activity() -> None:
     import re
     from norway_company_agent.claims import _is_product_code
