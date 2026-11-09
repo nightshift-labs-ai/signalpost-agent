@@ -39,7 +39,7 @@ PRIORITY_TERMS = (
 MAX_SECONDARY_PAGES = 8
 ORG_NUMBER_PATTERN = re.compile(r"(?<!\d)(\d{3})[\s\u00a0.]?(\d{3})[\s\u00a0.]?(\d{3})(?!\d)")
 JOB_PATH = re.compile(r"karriere|career|jobb|stilling|vacanc", re.I)
-NEWS_PATH = re.compile(r"/(?:news|press|aktuelt|nyheter|artikler|blogg?)(?:/|$)", re.I)
+NEWS_PATH = re.compile(r"/(?:news|press|aktuelt|nyheter|nyhet|artikler|artikkel|blogg?|blogs)(?:/|$)", re.I)
 
 
 def find_org_number(text: str, org: str | None) -> str | None:
@@ -131,6 +131,67 @@ def news_items(soup: BeautifulSoup, page_url: str) -> list[dict[str, Any]]:
             continue
         found[url] = {"title": title[:300], "url": url, "date": date, "source_url": page_url}
     return list(found.values())[:30]
+
+
+SITEMAP_CHILD = re.compile(r"nyhet|news|post|blog|artik|aktuelt|karriere|career|jobb|stilling", re.I)
+MAX_SITEMAP_ITEMS = 12
+
+
+def _fetch_text(url: str, timeout: float, max_bytes: int = 1_000_000) -> tuple[str, str | None]:
+    """Fetch a small text resource when robots.txt allows it; returns (text, sha256 or None)."""
+    if not _robots_allowed(url, timeout):
+        return "", None
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/xml,text/xml"})
+    with SAFE_OPENER.open(request, timeout=timeout) as response:
+        raw = response.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        return "", None
+    return raw.decode("utf-8", errors="replace"), __import__("hashlib").sha256(raw).hexdigest()
+
+
+def sitemap_items(home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
+    """News and job URLs the site lists in its own sitemap, with its stated lastmod. Bounded and optional."""
+    result: dict[str, Any] = {"source_url": None, "content_sha256": None, "news": [], "jobs": []}
+    parsed_home = urllib.parse.urlparse(home_url)
+    root_sitemap = f"{parsed_home.scheme}://{parsed_home.netloc}/sitemap.xml"
+    domain = _registered_domain(home_url)
+    try:
+        text, digest = _fetch_text(root_sitemap, timeout)
+        if not text:
+            return result
+        result.update({"source_url": root_sitemap, "content_sha256": digest})
+        documents: list[tuple[str, str | None]] = [(text, None)]
+        if "<sitemapindex" in text:
+            children = [item for item in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text) if SITEMAP_CHILD.search(item)][:3]
+            documents = []
+            for child in children:
+                if _registered_domain(child) != domain:
+                    continue
+                child_text, _ = _fetch_text(child, timeout)
+                if child_text:
+                    documents.append((child_text, "jobs" if re.search(r"karriere|career|jobb|stilling", child, re.I) else "news"))
+        entries: list[tuple[str, str | None, str | None]] = []
+        for document, kind in documents:
+            for block in re.findall(r"<url>(.*?)</url>", document, re.S):
+                loc = re.search(r"<loc>\s*([^<\s]+)\s*</loc>", block)
+                lastmod = re.search(r"<lastmod>\s*(\d{4}-\d{2}-\d{2})", block)
+                if loc and _registered_domain(loc.group(1)) == domain:
+                    entries.append((loc.group(1), lastmod.group(1) if lastmod else None, kind))
+    except Exception:
+        return result
+    entries.sort(key=lambda item: item[1] or "", reverse=True)
+    listing_titles = {"news", "nyheter", "nyhet", "blog", "blogg", "bloggen", "aktuelt", "artikler", "karriere", "career", "careers", "jobb", "jobs", "stillinger", "ledige stillinger", "jobb hos oss"}
+    for url, lastmod, kind in entries:
+        path = urllib.parse.urlparse(url).path
+        depth = len([part for part in path.split("/") if part])
+        title = re.sub(r"[-_]+", " ", urllib.parse.unquote(path.rstrip("/").rsplit("/", 1)[-1])).strip()
+        if title.casefold() in listing_titles or not title:
+            continue
+        if depth >= 2 and (kind == "jobs" or JOB_PATH.search(path)) and len(result["jobs"]) < MAX_SITEMAP_ITEMS:
+            result["jobs"].append({"title": title, "date_posted": None, "valid_through": None, "source_url": root_sitemap, "posting_url": url, "sitemap_lastmod": lastmod, "date_basis": "sitemap_lastmod"})
+        elif lastmod and depth >= 1 and (kind == "news" or (depth >= 2 and NEWS_PATH.search(path))) and len(result["news"]) < MAX_SITEMAP_ITEMS:
+            result["news"].append({"title": title, "url": url, "date": lastmod, "source_url": root_sitemap, "date_basis": "sitemap_lastmod"})
+    return result
 
 
 def job_postings(html_metadata: dict[str, Any], page_url: str) -> list[dict[str, Any]]:
@@ -460,6 +521,7 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             elif page_error:
                 crawl_errors.append({"url": page_url, "error": page_error})
         value["pages"] = pages
+        value["sitemap"] = sitemap_items(final_url, timeout=min(timeout, 10.0))
         address_page = next((page for page in pages if page.get("address_excerpt")), None)
         if address_page:
             value["registered_address_found_at"] = address_page["url"]

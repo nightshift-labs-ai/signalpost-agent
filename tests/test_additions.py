@@ -141,3 +141,15 @@ def test_international_domain_needs_the_organisation_number():
     assert found is None and metrics["candidates"][0]["outcome"] == "rejected_identity"
     found, _ = discover(profile, "post@smith-nephew.com", fetch=fake_fetch({"smith-nephew.com": site("https://www.smith-nephew.com/", title="Smith Nephew", text=text, org_found=True)}), dns=lambda domain: domain == "smith-nephew.com")
     assert found is not None
+
+
+def test_sitemap_news_with_lastmod_become_dated_claims():
+    from norway_company_agent.website import _fetch_text  # noqa: F401 (imports must resolve)
+    sitemap = {"source_url": "https://a.no/sitemap.xml", "content_sha256": "x", "news": [{"title": "ny avtale", "url": "https://a.no/nyheter/ny-avtale", "date": "2026-10-02", "source_url": "https://a.no/sitemap.xml", "date_basis": "sitemap_lastmod"}], "jobs": [{"title": "utvikler", "posting_url": "https://a.no/karriere/utvikler", "sitemap_lastmod": "2026-09-01", "date_basis": "sitemap_lastmod"}]}
+    profile = {"organisation_number": ORG, "name": "X AS", "evidence": {"website": {"status": "available", "source_url": "https://a.no", "retrieved_at": "t", "value": {"final_url": "https://a.no/", "identity_assessment": {"publishable": True, "score": 1.0}, "pages": [], "social_links": [], "sitemap": sitemap}}}}
+    claims, rows, _ = build_claims(profile)
+    news = [c for c in claims if c["field"] == "public_activity.dated_item" and c["availability"] == "available"]
+    assert news[0]["evidence_ids"] == ["ev-sitemap"] and "lastmod" in news[0]["source_note"]
+    assert any(c["field"] == "hiring.job_posting" and c["availability"] == "available" for c in claims)
+    assert any(row["id"] == "ev-sitemap" for row in rows)
+    assert not [c for c in claims if c["field"] == "hiring.job_posting" and c["availability"] == "not_available"]

@@ -109,9 +109,17 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
         found = {item["platform"]: item["url"] for item in site.get("social_links") or []}
         for platform in PLATFORMS:
             claims.append(_claim(f"company_profile.{platform}", found.get(platform), "available" if platform in found else "not_available", CONFIDENCE["site"] if platform in found else None, ["ev-website"]))
+        sitemap = site.get("sitemap") or {}
+        if sitemap.get("source_url"):
+            evidence_rows.append({"id": "ev-sitemap", "source_url": sitemap["source_url"], "source_class": "company_owned", "retrieved_at": website.get("retrieved_at"), "content_sha256": sitemap.get("content_sha256")})
         jobs = [(idx, job) for idx, page in enumerate(site.get("pages") or []) for job in [*(page.get("job_postings") or []), *(page.get("listed_jobs") or [])]]
         for idx, job in jobs:
             claims.append(_claim("hiring.job_posting", job, "available", CONFIDENCE["site"], [f"ev-site-{idx}"], effective_at=job.get("date_posted")))
+        listed_urls = {job.get("posting_url") for _, job in jobs}
+        sitemap_jobs = [job for job in sitemap.get("jobs") or [] if job.get("posting_url") not in listed_urls]
+        for job in sitemap_jobs:
+            claims.append(_claim("hiring.job_posting", job, "available", CONFIDENCE["site"], ["ev-sitemap"], effective_at=job.get("sitemap_lastmod"), source_note="listed in the company's own sitemap; lastmod is the page's last change, not a posting date"))
+        jobs = jobs + [(None, job) for job in sitemap_jobs]
         job_pages = [idx for idx, page in enumerate(site.get("pages") or []) if page.get("kind") == "jobs"]
         if not jobs:
             claims.append(_claim("hiring.job_posting", None, "not_available", None, [f"ev-site-{idx}" for idx in job_pages] or ["ev-website"]))
@@ -124,6 +132,11 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
         dated += [(idx, {"title": (page.get("title") or "")[:300], "url": page.get("url"), "date": date}) for idx, page in activity for date in page.get("stated_dates") or [] if page.get("url") not in seen_urls]
         for idx, item in dated:
             claims.append(_claim("public_activity.dated_item", item, "available", CONFIDENCE["site"], [f"ev-site-{idx}"], effective_at=item["date"], source_note="company-owned"))
+        seen_urls |= {item["url"] for _, item in dated}
+        sitemap_news = [item for item in sitemap.get("news") or [] if item["url"] not in seen_urls]
+        for item in sitemap_news:
+            claims.append(_claim("public_activity.dated_item", item, "available", CONFIDENCE["site"], ["ev-sitemap"], effective_at=item["date"], source_note="company-owned; date is the sitemap lastmod, which can be a later edit rather than first publication"))
+        dated = dated + [(None, item) for item in sitemap_news]
         if not dated:
             claims.append(_claim("public_activity.dated_item", None, "not_available", None, [f"ev-site-{idx}" for idx, _ in activity] or ["ev-website"]))
     else:
