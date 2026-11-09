@@ -153,3 +153,12 @@ def test_sitemap_news_with_lastmod_become_dated_claims():
     assert any(c["field"] == "hiring.job_posting" and c["availability"] == "available" for c in claims)
     assert any(row["id"] == "ev-sitemap" for row in rows)
     assert not [c for c in claims if c["field"] == "hiring.job_posting" and c["availability"] == "not_available"]
+
+
+def test_sitemap_page_type_children_are_not_news():
+    from norway_company_agent.website import SITEMAP_CHILD, SITEMAP_NOT_NEWS
+    keep = lambda url: bool(SITEMAP_CHILD.search(url)) and not SITEMAP_NOT_NEWS.search(url)
+    assert keep("https://a.no/wp-sitemap-posts-post-1.xml")
+    assert keep("https://a.no/nyhet-sitemap.xml")
+    assert not keep("https://a.no/wp-sitemap-posts-page-1.xml")
+    assert not keep("https://a.no/page-sitemap.xml")

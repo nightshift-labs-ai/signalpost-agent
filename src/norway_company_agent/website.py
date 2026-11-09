@@ -134,6 +134,7 @@ def news_items(soup: BeautifulSoup, page_url: str) -> list[dict[str, Any]]:
 
 
 SITEMAP_CHILD = re.compile(r"nyhet|news|post|blog|artik|aktuelt|karriere|career|jobb|stilling", re.I)
+SITEMAP_NOT_NEWS = re.compile(r"page|categor|tag|author|product|taxonom", re.I)  # WordPress also publishes wp-sitemap-posts-page-1.xml
 MAX_SITEMAP_ITEMS = 12
 
 
@@ -162,7 +163,7 @@ def sitemap_items(home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
         result.update({"source_url": root_sitemap, "content_sha256": digest})
         documents: list[tuple[str, str | None]] = [(text, None)]
         if "<sitemapindex" in text:
-            children = [item for item in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text) if SITEMAP_CHILD.search(item)][:3]
+            children = [item for item in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text) if SITEMAP_CHILD.search(item) and not SITEMAP_NOT_NEWS.search(item)][:3]
             documents = []
             for child in children:
                 if _registered_domain(child) != domain:
@@ -180,7 +181,7 @@ def sitemap_items(home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
     except Exception:
         return result
     entries.sort(key=lambda item: item[1] or "", reverse=True)
-    listing_titles = {"news", "nyheter", "nyhet", "blog", "blogg", "bloggen", "aktuelt", "artikler", "karriere", "career", "careers", "jobb", "jobs", "stillinger", "ledige stillinger", "jobb hos oss"}
+    listing_titles = {"personvern", "informasjonskapsler", "cookies", "privacy", "vilkar", "kontakt", "om oss", "news", "nyheter", "nyhet", "blog", "blogg", "bloggen", "aktuelt", "artikler", "karriere", "career", "careers", "jobb", "jobs", "stillinger", "ledige stillinger", "jobb hos oss"}
     for url, lastmod, kind in entries:
         path = urllib.parse.urlparse(url).path
         depth = len([part for part in path.split("/") if part])
