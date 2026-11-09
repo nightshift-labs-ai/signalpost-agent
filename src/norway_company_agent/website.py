@@ -209,7 +209,7 @@ def _without_bulk_lastmod(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 LISTING_TITLES = {"personvern", "informasjonskapsler", "cookies", "privacy", "vilkar", "kontakt", "om oss", "news", "nyheter", "nyhet", "blog", "blogg", "bloggen", "aktuelt", "artikler", "karriere", "career", "careers", "jobb", "jobs", "stillinger", "ledige stillinger", "jobb hos oss", "kontakt oss", "hello world", "sample page", "eksempelside"}
-NOT_NEWS_PATH = re.compile(r"/(?:portfolio|portefolje|referanser?|prosjekter|products?|produkter?|shop|butikk|category|categories|kategori|kategorier|tags?|stikkord|author|forfatter)(?:/|$)|^(?:/[a-z]{2}(?:-[a-z]{2})?)?/blogs/[^/]+/?$", re.I)
+NOT_NEWS_PATH = re.compile(r"/(?:portfolio|portefolje|referanser?|prosjekter|products?|produkter?|shop|butikk|category|categories|kategori|kategorier|tags?|tagged|stikkord|author|forfatter)(?:/|$)|^(?:/[a-z]{2}(?:-[a-z]{2})?)?/blogs/[^/]+/?$", re.I)
 
 
 def _no_xml_declaration(html: str) -> str:

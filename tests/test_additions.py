@@ -692,6 +692,14 @@ def test_posts_sharing_one_sitemap_lastmod_have_no_usable_date() -> None:
     assert _without_bulk_lastmod(bulk + few + in_url) == few + in_url
 
 
+def test_activity_has_one_item_per_url_and_no_tag_pages() -> None:
+    from norway_company_agent.claims import _unique_activity
+    first = (1, {"url": "https://a.no/aktuelt/sak", "date": "2026-01-02"})
+    again = (2, {"url": "https://a.no/aktuelt/sak", "date": "2026-01-02"})
+    tagged = (1, {"url": "https://a.no/blogs/news/tagged/Brie from X", "date": "2026-01-03"})
+    assert _unique_activity([first, again, tagged]) == [first]
+
+
 def test_product_codes_and_shop_blog_indexes_stay_out_of_activity() -> None:
     import re
     from norway_company_agent.claims import _is_product_code

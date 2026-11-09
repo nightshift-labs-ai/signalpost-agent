@@ -5,12 +5,12 @@ and a company site that did not pass the identity gate yields `ambiguous`, never
 """
 from __future__ import annotations
 
-import urllib.parse
-
 import re
+import urllib.parse
 from typing import Any
 
 from .identity import _structured_names
+from .website import NOT_NEWS_PATH
 
 STATE = {"available": "available", "not_found": "not_available", "not_applicable": "not_applicable", "blocked": "blocked", "source_error": "failed", "not_fetched": "failed"}
 OFFICIAL_MODULES = ("registry_live", "financials", "financial_history", "roles", "group", "locations")
@@ -156,6 +156,7 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
         dated = [(idx, {"title": item["title"], "url": item["url"], "date": item["date"]}) for idx, page in activity for item in page.get("news_items") or []]
         seen_urls = {item["url"] for _, item in dated}
         dated += [(idx, {"title": (page.get("title") or "")[:300], "url": page.get("url"), "date": date}) for idx, page in activity if _is_article_page(page) for date in page["stated_dates"] if page.get("url") not in seen_urls]
+        dated = _unique_activity(dated)
         for idx, item in dated:
             claims.append(_claim("public_activity.dated_item", item, "available", CONFIDENCE["site"], [f"ev-site-{idx}"], effective_at=item["date"], source_note="company-owned"))
         seen_urls |= {item["url"] for _, item in dated}
@@ -195,6 +196,16 @@ def _only_repeats_name(description: Any, name: Any) -> bool:
     words = lambda text: set(re.findall(r"[^\W_]+", str(text or "").casefold())) - {"as", "asa", "ans", "da", "ba", "sa"}
     described = words(description)
     return bool(described) and described <= words(name)
+
+
+def _unique_activity(dated: list[tuple[int, dict[str, Any]]]) -> list[tuple[int, dict[str, Any]]]:
+    """One item per URL, and tag, category or portfolio listings are not news even when a news page links to them with a date."""
+    unique: dict[str, tuple[int, dict[str, Any]]] = {}
+    for idx, item in dated:
+        url = str(item.get("url") or "")
+        if not NOT_NEWS_PATH.search(urllib.parse.urlparse(url).path):
+            unique.setdefault(url, (idx, item))
+    return list(unique.values())
 
 
 def _is_article_page(page: dict[str, Any]) -> bool:
