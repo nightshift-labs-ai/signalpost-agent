@@ -79,7 +79,10 @@ def diff(current: list[dict[str, Any]], previous: list[dict[str, Any]]) -> list[
 
 def _short(value: Any) -> str:
     """A change's value as a few words: the name or title of a record, or the value itself."""
-    if isinstance(value, dict):
+    if isinstance(value, dict) and value.get("poststed"):
+        place = " ".join(str(part) for part in (value.get("postnummer"), value.get("poststed")) if part)
+        value = ", ".join([*(str(line) for line in value.get("adresse") or [] if line), place])
+    elif isinstance(value, dict):
         value = next((value[key] for key in ("title", "name", "beskrivelse", "posting_url", "url") if value.get(key)), None) or ", ".join(str(item) for item in value.values() if isinstance(item, (str, int, float)))
     text = " ".join(str(value).split())
     return text if len(text) <= 80 else text[:80].rsplit(" ", 1)[0] + "..."

@@ -760,3 +760,9 @@ def test_site_sentences_use_only_available_site_claims():
     assert out[1][0].startswith('Its site shows 2 dated items; the latest is "New", 2026-01-01 (date from the site')
     assert out[1][1] == ["ev-b"] and len(out) == 2
     assert _site_sentences([{**claims[0], "availability": "ambiguous"}]) == []
+
+
+def test_change_text_shows_an_address_as_a_postal_address():
+    from norway_company_agent.changes import _short
+    value = {"adresse": ["Tomtebu 2"], "kommune": "VIK", "kommunenummer": "4639", "land": "Norge", "landkode": "NO", "postnummer": "6893", "poststed": "VIK I SOGN"}
+    assert _short(value) == "Tomtebu 2, 6893 VIK I SOGN"
