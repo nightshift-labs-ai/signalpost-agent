@@ -121,7 +121,8 @@ def test_social_handle_must_equal_the_name_or_the_site_domain():
 def test_job_path_does_not_match_ordinary_words():
     from norway_company_agent.website import JOB_PATH
     assert JOB_PATH.search("/forestillinger") is None and JOB_PATH.search("/utstillinger/2026") is None and JOB_PATH.search("/bestilling/kvittering") is None
-    assert JOB_PATH.search("/ledige-stillinger") and JOB_PATH.search("/stillinger/") and JOB_PATH.search("/jobb-hos-oss")
+    assert JOB_PATH.search("/ledige-stillinger") and JOB_PATH.search("/stillinger/") and JOB_PATH.search("/jobb-hos-oss") and JOB_PATH.search("/alt-om-oss/jobbe-hos-oss") and JOB_PATH.search("/om/jobb") and JOB_PATH.search("/careers")
+    assert JOB_PATH.search("/skolen/hvordan-jobber-vi/") is None and JOB_PATH.search("/slik-jobber-vi") is None
 
 
 def test_snapshot_without_the_company_still_gives_a_terminal_profile(tmp_path):

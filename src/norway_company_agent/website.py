@@ -37,13 +37,13 @@ PRIORITY_TERMS = (
     "om-oss", "om_oss", "about", "kontakt", "contact", "ledelse", "management",
     "team", "people", "locations", "lokasjoner", "avdelinger", "butikker",
     "news", "press", "aktuelt", "nyheter", "artikler", "blogg", "blog",
-    "karriere", "career", "jobb", "ledige-stillinger", "/stillinger", "vacancies",
+    "karriere", "career", "/jobb", "jobbe-hos", "ledige-stillinger", "/stillinger", "vacancies",
 )
 MAX_SECONDARY_PAGES = 8
 READ_DEADLINE_SECONDS = 20.0
 SITE_BUDGET_SECONDS = 45.0
 ORG_NUMBER_PATTERN = re.compile(r"(?<!\d)(\d{3})[\s\u00a0.]?(\d{3})[\s\u00a0.]?(\d{3})(?!\d)")
-JOB_PATH = re.compile(r"karriere|career|jobb|(?:^|[/_-])(?:ledige-)?stillinger?(?:[/_.-]|$)|vacanc", re.I)
+JOB_PATH = re.compile(r"karriere|career|vacanc|(?:^|[/_-])(?:ledige-)?stillinger?(?:[/_.-]|$)|(?:^|[/_-])jobb?s?(?:[/_.-]|$)|jobbe?-(?:hos|i|med|for)\b", re.I)
 NEWS_PATH = re.compile(r"/(?:news|press|aktuelt|nyheter|nyhet|artikler|artikkel|blogg?|blogs)(?:/|$)", re.I)
 
 
