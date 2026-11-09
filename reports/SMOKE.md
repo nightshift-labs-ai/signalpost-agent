@@ -1,8 +1,8 @@
-# Smoke test, run smoke-022 (2026-11-09)
+# Smoke test, run smoke-023 (2026-11-09)
 
 100 companies from `select_entry_batch.py` (default seed). Real Brønnøysund bulk snapshot. No API key, no paid service.
 
-- 100 of 100 terminal envelopes, validation passed: True (`smoke-report.json`). Run time 113.8 s; 917 requests, p50 464 ms, p95 1156 ms, third-party cost 0.
+- 100 of 100 terminal envelopes, validation passed: True (`smoke-report.json`). Run time 114.8 s; 917 requests, p50 464 ms, p95 1249 ms, third-party cost 0.
 - 7 of 100 companies have a published official website; 2 more sites are held as `ambiguous` because they failed the identity gate.
 - How each published site was found: legal_name_guess 4, registry_filed_website 3.
 - Identity basis: registered address on the site 3, organisation number on the site 2, registered phone on the site 1, name evidence only 1.
