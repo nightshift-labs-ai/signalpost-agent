@@ -712,3 +712,51 @@ def test_product_codes_and_shop_blog_indexes_stay_out_of_activity() -> None:
     assert NOT_NEWS_PATH.search("/en-eu/blogs/news/")
     assert not NOT_NEWS_PATH.search("/en-eu/blogs/news/en-artikkel")
     assert re.fullmatch(r"(?=\S*\d)(?=\S*[^\W\d_])\S+", "1350m301t150") and not re.fullmatch(r"(?=\S*\d)(?=\S*[^\W\d_])\S+", "nyhet 2026")
+
+
+def _summary_envelope(claims):
+    return {"claims": claims, "run_id": "r2", "summary": {"text": "Base.", "sentences": [{"text": "Base.", "evidence_ids": ["ev-registry_live"]}]}}
+
+
+def test_summary_states_a_first_run_has_no_comparison():
+    done = apply_previous(_summary_envelope([]), None)
+    assert done["summary"]["text"].endswith("no earlier run to compare it with.")
+    assert done["summary"]["sentences"][-1]["evidence_ids"] == []
+
+
+def test_summary_reports_changes_with_their_evidence():
+    before = [{"field": "leadership.role", "value": {"name": "A B", "role_code": "DAGL"}, "availability": "available", "evidence_ids": ["ev-roles"]}]
+    after = [{"field": "leadership.role", "value": {"name": "C D", "role_code": "DAGL"}, "availability": "available", "evidence_ids": ["ev-roles"]}]
+    done = apply_previous(_summary_envelope(after), {"claims": before, "run_id": "r1", "evidence": [{"id": "ev-roles"}]})
+    last = done["summary"]["sentences"][-1]
+    assert last["text"].startswith("Since the previous run:")
+    assert "new leadership role: C D" in last["text"] and "leadership role no longer found (was A B)" in last["text"]
+    assert last["evidence_ids"] == ["ev-roles", "ev-roles@r1"]
+
+
+def test_summary_does_not_call_an_unreadable_source_a_change():
+    before = [{"field": "hiring.job_posting", "value": {"title": "Baker", "posting_url": "u"}, "availability": "available", "evidence_ids": ["e"]}]
+    after = [{"field": "hiring.job_posting", "value": None, "availability": "failed", "evidence_ids": []}]
+    done = apply_previous(_summary_envelope(after), {"claims": before, "run_id": "r1"})
+    assert done["changes"] == []
+    assert "No material change" in done["summary"]["text"] and "could not be read" in done["summary"]["text"]
+
+
+def test_summary_refresh_sentence_is_not_added_twice():
+    envelope = apply_previous(_summary_envelope([]), None)
+    assert len(apply_previous(envelope, None)["summary"]["sentences"]) == 2
+
+
+def test_site_sentences_use_only_available_site_claims():
+    from norway_company_agent.claims import _site_sentences
+    claims = [
+        {"field": "self_description", "value": "Vi lager  gode\nbrød.", "availability": "available", "evidence_ids": ["ev-website"]},
+        {"field": "public_activity.dated_item", "value": {"title": "Old", "date": "2020-01-01", "url": "a"}, "availability": "available", "evidence_ids": ["ev-a"]},
+        {"field": "public_activity.dated_item", "value": {"title": "New", "date": "2026-01-01", "url": "b", "date_basis": "sitemap_lastmod"}, "availability": "available", "evidence_ids": ["ev-b"]},
+        {"field": "hiring.job_posting", "value": None, "availability": "not_available", "evidence_ids": ["ev-site-1"]},
+    ]
+    out = _site_sentences(claims)
+    assert out[0] == ('In its own words on its website: "Vi lager gode brød."', ["ev-website"])
+    assert out[1][0].startswith('Its site shows 2 dated items; the latest is "New", 2026-01-01 (date from the site')
+    assert out[1][1] == ["ev-b"] and len(out) == 2
+    assert _site_sentences([{**claims[0], "availability": "ambiguous"}]) == []

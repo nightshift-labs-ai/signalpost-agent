@@ -77,14 +77,60 @@ def diff(current: list[dict[str, Any]], previous: list[dict[str, Any]]) -> list[
     return changes
 
 
+def _short(value: Any) -> str:
+    """A change's value as a few words: the name or title of a record, or the value itself."""
+    if isinstance(value, dict):
+        value = next((value[key] for key in ("title", "name", "beskrivelse", "posting_url", "url") if value.get(key)), None) or ", ".join(str(item) for item in value.values() if isinstance(item, (str, int, float)))
+    text = " ".join(str(value).split())
+    return text if len(text) <= 80 else text[:80].rsplit(" ", 1)[0] + "..."
+
+
+def _change_text(change: dict[str, Any]) -> str:
+    label = change["field"].replace(".", " ").replace("_", " ")
+    if change["type"] == "added":
+        return f"new {label}: {_short(change.get('current'))}"
+    if change["type"] == "removed":
+        return f"{label} no longer found (was {_short(change.get('previous'))})"
+    return f"{label} changed from {_short(change.get('previous'))} to {_short(change.get('current'))}"
+
+
+def _refresh_sentence(envelope: dict[str, Any], previous: dict[str, Any] | None) -> None:
+    """State in the summary what this run can say about change, including that it cannot say anything yet."""
+    summary = envelope.get("summary")
+    if not isinstance(summary, dict) or not isinstance(summary.get("sentences"), list):
+        return
+    evidence_ids: list[str] = []
+    if not previous:
+        text = "This is the first run for this company, so there is no earlier run to compare it with."
+    else:
+        changes = envelope.get("changes") or []
+        if changes:
+            shown = changes[:3]
+            more = f", and {len(changes) - len(shown)} more" if len(changes) > len(shown) else ""
+            text = "Since the previous run: " + "; ".join(_change_text(change) for change in shown) + more + "."
+            run_id = str(previous.get("run_id"))
+            for change in shown:
+                evidence_ids += change.get("evidence_ids") or [f"{evidence_id}@{run_id}" for evidence_id in change.get("previous_evidence_ids") or []]
+        else:
+            text = "No material change was found since the previous run."
+        if _uncertain_families(envelope.get("claims") or []):
+            text += " Sources that could not be read in this run are not counted as changes."
+    sentences = [item for item in summary["sentences"] if item.get("kind") != "refresh"]
+    sentences.append({"text": text, "evidence_ids": sorted(set(evidence_ids)), "kind": "refresh"})
+    summary["sentences"] = sentences
+    summary["text"] = " ".join(item["text"] for item in sentences)
+
+
 def apply_previous(envelope: dict[str, Any], previous: dict[str, Any] | None) -> dict[str, Any]:
     """Fill `changes` and carry prior evidence forward. Idempotent for an identical snapshot."""
     if not previous:
         envelope["refresh"] = {"previous_run_id": None, "first_observation": True}
+        _refresh_sentence(envelope, None)
         return envelope
     envelope["changes"] = diff(envelope["claims"], previous.get("claims") or [])
     carried = {row["id"]: row for row in previous.get("prior_evidence") or []}
     carried.update({row["id"] + "@" + str(previous.get("run_id")): {**row, "id": row["id"] + "@" + str(previous.get("run_id"))} for row in previous.get("evidence") or []})
     envelope["prior_evidence"] = list(carried.values())
     envelope["refresh"] = {"previous_run_id": previous.get("run_id"), "first_observation": False, "material_changes": len(envelope["changes"])}
+    _refresh_sentence(envelope, previous)
     return envelope

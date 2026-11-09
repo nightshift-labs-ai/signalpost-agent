@@ -264,6 +264,35 @@ def _financial_sentences(claims: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+def _plain(text: Any, limit: int) -> str:
+    """One line of source text, cut at a word boundary, so a summary sentence stays readable."""
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit].rsplit(" ", 1)[0].rstrip(" ,.;:") + "..."
+
+
+def _site_sentences(claims: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
+    """What the verified site itself adds: its own description, its latest dated item, its job postings."""
+    available = [claim for claim in claims if claim.get("availability") == "available"]
+    out: list[tuple[str, list[str]]] = []
+    description = next((claim for claim in available if claim["field"] == "self_description" and claim.get("value")), None)
+    if description:
+        out.append((f"In its own words on its website: \"{_plain(description['value'], 220)}\"", list(description.get("evidence_ids") or [])))
+    items = [claim for claim in available if claim["field"] == "public_activity.dated_item" and isinstance(claim.get("value"), dict) and claim["value"].get("date") and claim["value"].get("title")]
+    if items:
+        latest = max(items, key=lambda claim: (str(claim["value"]["date"]), str(claim["value"].get("url") or "")))
+        basis = " (date from the site's sitemap, which can be a later edit)" if latest["value"].get("date_basis") == "sitemap_lastmod" else ""
+        count = f"{len(items)} dated items" if len(items) > 1 else "1 dated item"
+        out.append((f"Its site shows {count}; the latest is \"{_plain(latest['value']['title'], 100)}\", {latest['value']['date']}{basis}.", list(latest.get("evidence_ids") or [])))
+    jobs = [claim for claim in available if claim["field"] == "hiring.job_posting" and isinstance(claim.get("value"), dict) and claim["value"].get("title")]
+    if jobs:
+        first = sorted(jobs, key=lambda claim: str(claim["value"].get("posting_url") or claim["value"]["title"]))[0]
+        count = f"{len(jobs)} job postings" if len(jobs) > 1 else "1 job posting"
+        out.append((f"Its own site lists {count}, for example \"{_plain(first['value']['title'], 100)}\".", list(first.get("evidence_ids") or [])))
+    return out
+
+
 def build_summary(profile: dict[str, Any], claims: list[dict[str, Any]], publishable: bool) -> dict[str, Any]:
     """A deterministic summary. Each sentence names the evidence behind it; nothing is inferred."""
     live = (profile.get("evidence") or {}).get("registry_live", {}).get("value") or {}
@@ -292,6 +321,8 @@ def build_summary(profile: dict[str, Any], claims: list[dict[str, Any]], publish
     website = next((c for c in claims if c["field"] == "official_website"), {})
     if publishable:
         say(f"Its official website is {website.get('value')}, confirmed by: {'; '.join(website.get('identity_reasons') or ['site identity checks'])}.", "ev-website")
+        for text, evidence_ids in _site_sentences(claims):
+            say(text, *evidence_ids)
     else:
         say("No website could be confirmed as this exact entity, so no site-based facts are published.", "ev-website")
     gap_names = {"company_profile": "linked social profiles", "hiring": "hiring information", "official_website": "official website", "public_activity": "dated public activity", "public_brand": "public brand name", "registered_employees": "registered employee count", "self_description": "the company's own description", "leadership": "leadership", "financials": "filed accounts", "registered_workplace": "registered workplaces", "group": "group links"}
