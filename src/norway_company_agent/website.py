@@ -198,6 +198,11 @@ def _looks_like_job_title(text: str) -> bool:
     return 1 <= len(words) <= 8 and len(text) <= 90 and text[-1] not in ".!?:;," and not NOT_A_TITLE_START.match(text) and not NOT_A_TITLE_WORD.search(text) and bool(JOB_TITLE_WORD.search(text))
 
 
+def _no_xml_declaration(html: str) -> str:
+    """The structured-data parser rejects decoded text that still starts with an XML declaration, which older XHTML pages do."""
+    return re.sub(r"^\s*<\?xml[^>]*\?>", "", html, count=1)
+
+
 def _is_job_link(title: str, path: str) -> bool:
     """A careers section also links stories, benefits and policies. A link counts as a job only when its title reads like one,
     or its own path is an item under a jobs listing and the title is not a sentence, question or policy page."""
@@ -581,7 +586,7 @@ def _fetch_secondary_page(url: str, *, homepage_domain: str, timeout: float, max
         page_soup = BeautifulSoup(page_html, "lxml")
         page_text = trafilatura.extract(page_html, url=final_url, include_links=False, include_tables=False, favor_precision=True) or ""
         try:
-            page_metadata = extruct.extract(page_html, base_url=final_url, syntaxes=["json-ld"], errors="log")
+            page_metadata = extruct.extract(_no_xml_declaration(page_html), base_url=final_url, syntaxes=["json-ld"], errors="log")
         except Exception:
             page_metadata = {}
         page = {
@@ -656,7 +661,7 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
         html = _decode_html(raw)
         soup = BeautifulSoup(html, "lxml")
         try:
-            structured = extruct.extract(html, base_url=final_url, syntaxes=["json-ld", "microdata", "opengraph"], errors="log")
+            structured = extruct.extract(_no_xml_declaration(html), base_url=final_url, syntaxes=["json-ld", "microdata", "opengraph"], errors="log")
         except Exception:
             structured = {}
         text = trafilatura.extract(html, url=final_url, include_links=False, include_tables=False, favor_precision=True) or ""

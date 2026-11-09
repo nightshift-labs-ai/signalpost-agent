@@ -214,6 +214,16 @@ def _claim(claim: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _change(item: Any) -> str:
+    if not isinstance(item, dict):
+        return str(item)
+    kind = {"changed": "Changed", "added": "New", "removed": "No longer found"}.get(str(item.get("type")), "Changed")
+    field = str(item.get("field") or "").replace("_", " ").replace(".", " ")
+    before, after = _display(item.get("previous")), _display(item.get("current"))
+    detail = f"{before} \u2192 {after}" if before and after else (after or before)
+    return f"{kind}: {field}" + (f": {detail}" if detail else "")
+
+
 def _evidence(item: dict[str, Any]) -> dict[str, Any]:
     return {"u": item.get("source_url"), "c": item.get("source_class"), "at": item.get("retrieved_at"), "h": item.get("content_sha256"), "q": item.get("claim_span"), "m": item.get("extraction_method")}
 
@@ -231,7 +241,7 @@ def row(envelope: dict[str, Any]) -> dict[str, Any]:
         "summary": summary.get("text") if isinstance(summary, dict) else summary,
         "done": envelope.get("completed_at"),
         "first": bool(refresh.get("first_observation")) if isinstance(refresh, dict) else False,
-        "changes": [str(item.get("summary") or item.get("description") or item.get("field") or item) if isinstance(item, dict) else str(item) for item in envelope.get("changes") or []],
+        "changes": [_change(item) for item in envelope.get("changes") or []],
         "claims": claims,
         "ev": {item["id"]: _evidence(item) for item in envelope.get("evidence") or [] if item.get("id") in cited},
         "score": richness,

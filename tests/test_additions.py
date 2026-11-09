@@ -574,3 +574,17 @@ def test_real_postings_stay_jobs() -> None:
         ("summer internship 2027", "/careers/vacancies/summer-internship-2027/"),
     ]:
         assert _is_job_link(title, path), title
+
+
+def test_xhtml_page_keeps_its_structured_data() -> None:
+    import extruct
+    from norway_company_agent.website import _no_xml_declaration
+    page = '<?xml version="1.0" encoding="UTF-8"?><html><body><script type="application/ld+json">{"@type":"Organization","name":"A"}</script></body></html>'
+    assert extruct.extract(_no_xml_declaration(page), base_url="https://a.no/", syntaxes=["json-ld"], errors="log")["json-ld"][0]["name"] == "A"
+
+
+def test_site_describes_a_change_instead_of_only_naming_the_field() -> None:
+    builder = _load_site_builder()
+    envelope = _site_envelope()
+    envelope["changes"] = [{"type": "changed", "field": "financials.revenue", "previous": 100.0, "current": 200.0}, {"type": "removed", "field": "official_website", "previous": "https://a.no/"}]
+    assert builder.row(envelope)["changes"] == ["Changed: financials revenue: 100 \u2192 200", "No longer found: official website: https://a.no/"]
