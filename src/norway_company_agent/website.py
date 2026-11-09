@@ -179,8 +179,32 @@ def listed_jobs(soup: BeautifulSoup, page_url: str) -> list[dict[str, Any]]:
             continue
         if len(title.split()) < 2 or len(title) > 200 or re.search(r"se alle|ledige stillinger|les mer|søk her", title, re.I):
             continue
+        if not _is_job_link(title, parsed.path):
+            continue
         found[url.split("#")[0]] = {"title": title, "date_posted": None, "valid_through": None, "source_url": page_url, "posting_url": url.split("#")[0]}
     return list(found.values())[:30]
+
+
+JOB_TITLE_WORD = re.compile(r"(?:leder|sjef|ingeni\u00f8r|konsulent|r\u00e5dgiver|medarbeider|operat\u00f8r|tekniker|mont\u00f8r|arbeider|sykepleier|l\u00e6rer|selger|utvikler|assistent|ansvarlig|koordinator|maskinf\u00f8rer|snekker|t\u00f8mrer|elektriker|r\u00f8rlegger|sj\u00e5f\u00f8r|kokk|regnskapsf\u00f8rer|revisor|advokat|kontroll\u00f8r|planlegger|kalkulat\u00f8r|mekaniker|sveiser|manager|engineer|developer|specialist|technician|consultant|operator|analyst|director|officer|coordinator|designer|accountant|trainee|l\u00e6rling)(?:er|e|en)?\b", re.I)
+NOT_A_TITLE_START = re.compile(r"^(?:vi|du|ingen|for|send|kontakt|se|les|s\u00f8k|v\u00e5r|v\u00e5re|bli|hvordan|hva|hvorfor|our|we|no|view|apply|about|join|how|why|what)\b", re.I)
+
+
+NOT_A_TITLE_WORD = re.compile(r"\b(?:som|av|din|deg|dine|v\u00e5re|privacy|policy|personvern)\b", re.I)
+JOB_ITEM_PATH = re.compile(r"(?:^|/)(?:ledige-stillinger|stillinger?|vacanc(?:y|ies)|jobs?|jobb|openings?|positions?)/[^/]+", re.I)
+
+
+def _looks_like_job_title(text: str) -> bool:
+    words = text.split()
+    return 1 <= len(words) <= 8 and len(text) <= 90 and text[-1] not in ".!?:;," and not NOT_A_TITLE_START.match(text) and not NOT_A_TITLE_WORD.search(text) and bool(JOB_TITLE_WORD.search(text))
+
+
+def _is_job_link(title: str, path: str) -> bool:
+    """A careers section also links stories, benefits and policies. A link counts as a job only when its title reads like one,
+    or its own path is an item under a jobs listing and the title is not a sentence, question or policy page."""
+    if _looks_like_job_title(title):
+        return True
+    plain = bool(title) and title[-1] not in ".!?:;," and ":" not in title and not NOT_A_TITLE_START.match(title) and not NOT_A_TITLE_WORD.search(title)
+    return plain and bool(JOB_ITEM_PATH.search(path))
 
 
 def news_items(soup: BeautifulSoup, page_url: str) -> list[dict[str, Any]]:
@@ -323,7 +347,7 @@ def sitemap_items(home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
         title = re.sub(r"[-_]+", " ", urllib.parse.unquote(path.rstrip("/").rsplit("/", 1)[-1])).strip()
         if title.casefold() in listing_titles or not title:
             continue
-        if depth >= 2 and (kind == "jobs" or JOB_PATH.search(path)) and len(result["jobs"]) < MAX_SITEMAP_ITEMS:
+        if depth >= 2 and (kind == "jobs" or JOB_PATH.search(path)) and _is_job_link(title, path) and len(result["jobs"]) < MAX_SITEMAP_ITEMS:
             result["jobs"].append({"title": title, "date_posted": None, "valid_through": None, "source_url": source, "posting_url": url, "sitemap_lastmod": lastmod, "date_basis": basis})
         elif lastmod and depth >= 1 and (kind == "news" or (depth >= 2 and NEWS_PATH.search(path))) and len(result["news"]) < MAX_SITEMAP_ITEMS:
             result["news"].append({"title": title, "url": url, "date": lastmod, "source_url": source, "date_basis": basis})

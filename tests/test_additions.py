@@ -551,3 +551,26 @@ def test_site_build_writes_one_page(tmp_path) -> None:
     source.write_text(json_module.dumps(_site_envelope()) + "\n\n", encoding="utf-8")
     assert builder.build(source, tmp_path / "site" / "index.html") == 1
     assert 'content="noindex"' in (tmp_path / "site" / "index.html").read_text(encoding="utf-8")
+
+
+def test_stories_and_policies_on_a_careers_page_are_not_jobs() -> None:
+    from norway_company_agent.website import _is_job_link
+    for title, path in [
+        ("Nilfisk's data privacy policy", "/om/job-and-career/privacy"),
+        ("Vil du jobbe som vikar hos oss?", "/alt-om-oss/jobbe-hos-oss/vikar"),
+        ("Sommerjobb i Sykehuset: Erfaringer for livet", "/jobbe-hos-oss/sommerjobb"),
+        ("Bli bedre kjent med noen av våre medarbeidere", "/jobbe-hos-oss/derfor"),
+        ("nye stillinger som trainee er lyst ut", "/nyheter/nye-stillinger"),
+        ("Kultur og velferd", "/jobbe-hos-oss/kultur-og-velferd"),
+    ]:
+        assert not _is_job_link(title, path), title
+
+
+def test_real_postings_stay_jobs() -> None:
+    from norway_company_agent.website import _is_job_link
+    for title, path in [
+        ("Prosjektleder maskinteknikk", "/karriere/prosjektleder"),
+        ("cnc operator", "/careers/vacancies/cnc-operator/"),
+        ("summer internship 2027", "/careers/vacancies/summer-internship-2027/"),
+    ]:
+        assert _is_job_link(title, path), title
