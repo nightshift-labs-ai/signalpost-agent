@@ -26,7 +26,7 @@ No API key, no model, no paid service: `third_party_cost_usd` is 0. Add `--previ
 
 Every batch also writes `site/index.html` next to the envelopes (a failure there cannot change the envelopes, the report or the exit code). It is one static file for phone and desktop: find a company, compare two side by side, and open the evidence behind any fact, with the source link, retrieval time, excerpt and content hash. Anything not found is shown as not found, never as zero, and a view can be shared by link.
 
-To rebuild by hand: `python scripts/build_site.py --envelopes out/envelopes.jsonl --output site/index.html`.
+Live copy of the 100-company smoke run: https://signalpost-results.nightshift-labs.workers.dev . To rebuild by hand: `python scripts/build_site.py --envelopes out/envelopes.jsonl --output site/index.html`.
 
 ## Sources, secrets and outbound URLs
 
