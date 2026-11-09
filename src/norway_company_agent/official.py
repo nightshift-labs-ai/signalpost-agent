@@ -76,7 +76,13 @@ def normalize_financials(body: Any) -> dict[str, Any]:
     if not records:
         return {"records": []}
     normalized = []
-    for item in records[:3]:
+    latest_first = sorted(records, key=lambda item: str(_get(item, "regnskapsperiode", "tilDato") or ""), reverse=True)
+    per_type: dict[Any, int] = {}
+    for item in latest_first:
+        account_type = item.get("regnskapstype")
+        per_type[account_type] = per_type.get(account_type, 0) + 1
+        if per_type[account_type] > 3:
+            continue
         normalized.append({
             "record_id": item.get("id"),
             "account_type": item.get("regnskapstype"),
@@ -165,6 +171,7 @@ def normalize_entity(body: Any) -> dict[str, Any]:
         "liquidating": body.get("underAvvikling"),
         "website": body.get("hjemmeside"),
         "email": body.get("epostadresse"),
+        "phones": [item for item in (body.get("telefon"), body.get("mobil")) if item],
         "in_group": body.get("erIKonsern"),
         "registered_purpose": " ".join(str(line).strip() for line in (body.get("aktivitet") or []) if str(line).strip()) or None,
         "industry": body.get("naeringskode1"),

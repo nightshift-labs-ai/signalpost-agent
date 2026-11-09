@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import html as html_module
 import json
 import ipaddress
 import re
 import socket
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
 import urllib.robotparser
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from typing import Any
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, UnicodeDammit
 import extruct
 import tldextract
 import trafilatura
@@ -34,22 +37,66 @@ PRIORITY_TERMS = (
     "om-oss", "om_oss", "about", "kontakt", "contact", "ledelse", "management",
     "team", "people", "locations", "lokasjoner", "avdelinger", "butikker",
     "news", "press", "aktuelt", "nyheter", "artikler", "blogg", "blog",
-    "karriere", "career", "jobb", "ledige-stillinger", "stillinger", "vacancies",
+    "karriere", "career", "jobb", "ledige-stillinger", "/stillinger", "vacancies",
 )
 MAX_SECONDARY_PAGES = 8
+READ_DEADLINE_SECONDS = 20.0
+SITE_BUDGET_SECONDS = 45.0
 ORG_NUMBER_PATTERN = re.compile(r"(?<!\d)(\d{3})[\s\u00a0.]?(\d{3})[\s\u00a0.]?(\d{3})(?!\d)")
-JOB_PATH = re.compile(r"karriere|career|jobb|stilling|vacanc", re.I)
+JOB_PATH = re.compile(r"karriere|career|jobb|(?:^|[/_-])(?:ledige-)?stillinger?(?:[/_.-]|$)|vacanc", re.I)
 NEWS_PATH = re.compile(r"/(?:news|press|aktuelt|nyheter|nyhet|artikler|artikkel|blogg?|blogs)(?:/|$)", re.I)
 
 
-def find_org_number(text: str, org: str | None) -> str | None:
-    """Return a short excerpt around the exact organisation number, or None."""
+def _read_capped(response: Any, limit: int, deadline_seconds: float = READ_DEADLINE_SECONDS) -> bytes:
+    """Read at most limit bytes within a wall-clock deadline.
+
+    The socket timeout only limits each single read, so a server trickling a byte at a time could hold a worker for many minutes.
+    """
+    read_some = getattr(response, "read1", None) or response.read
+    deadline = time.monotonic() + deadline_seconds
+    chunks: list[bytes] = []
+    total = 0
+    while total < limit:
+        chunk = read_some(min(65536, limit - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if time.monotonic() > deadline:
+            raise TimeoutError("page read exceeded the wall-clock limit")
+    return b"".join(chunks)
+
+
+_TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)  # the bundled list: no undeclared network call, same result on every machine
+
+
+def _decode_html(raw: bytes) -> str:
+    """Honour the page's real encoding; older Norwegian sites are often Latin-1."""
+    return UnicodeDammit(raw, is_html=True).unicode_markup or raw.decode("utf-8", errors="replace")
+
+
+def find_org_number(text: str, org: str | None, name_tokens: list[str] | None = None) -> str | None:
+    """Excerpt around the exact organisation number, or None.
+
+    A page listing several organisation numbers (a chain's store list, a customer list) proves nothing
+    about who owns the site, so there the excerpt must also carry a word from the company's name.
+    """
     if not org:
         return None
-    for match in ORG_NUMBER_PATTERN.finditer(text):
-        if "".join(match.groups()) == org:
-            return " ".join(text[max(0, match.start() - 80):match.end() + 40].split())
+    matches = list(ORG_NUMBER_PATTERN.finditer(text))
+    several = len({"".join(match.groups()) for match in matches}) > 1
+    for match in matches:
+        if "".join(match.groups()) != org:
+            continue
+        excerpt = " ".join(text[max(0, match.start() - 80):match.end() + 40].split())
+        if several and name_tokens and not any(token in _fold(excerpt) for token in name_tokens):
+            continue
+        return excerpt
     return None
+
+
+def _fold(text: str) -> str:
+    return unicodedata.normalize("NFKD", text.translate(str.maketrans({"ø": "o", "Ø": "o", "å": "a", "Å": "a", "æ": "ae", "Æ": "ae"}))).encode("ascii", "ignore").decode().casefold()
 
 
 def find_address(text: str, hints: dict[str, Any] | None) -> str | None:
@@ -63,6 +110,18 @@ def find_address(text: str, hints: dict[str, Any] | None) -> str | None:
         window = lowered[max(0, match.start() - 120):match.end() + 40]
         if street in window:
             return " ".join(text[max(0, match.start() - 80):match.end() + 40].split())
+    return None
+
+
+def find_phone(text: str, hints: dict[str, Any] | None) -> str | None:
+    """Excerpt where one of the company's registered phone numbers appears (any spacing), or None."""
+    for raw in (hints or {}).get("phones") or []:
+        digits = re.sub(r"\D", "", str(raw or ""))[-8:]
+        if len(digits) != 8:
+            continue
+        match = re.search(r"(?<!\d)" + r"[\s.\-]{0,2}".join(digits) + r"(?!\d)", text)
+        if match:
+            return " ".join(text[max(0, match.start() - 60):match.end() + 30].split())
     return None
 
 
@@ -136,6 +195,58 @@ def news_items(soup: BeautifulSoup, page_url: str) -> list[dict[str, Any]]:
 SITEMAP_CHILD = re.compile(r"nyhet|news|post|blog|artik|aktuelt|karriere|career|jobb|stilling", re.I)
 SITEMAP_NOT_NEWS = re.compile(r"page|categor|tag|author|product|taxonom", re.I)  # WordPress also publishes wp-sitemap-posts-page-1.xml
 MAX_SITEMAP_ITEMS = 12
+MAX_FEED_ITEMS = 30
+
+
+def _feed_field(block: str, tag: str) -> str:
+    match = re.search(rf"<{tag}(?:\s[^>]*)?>(.*?)</{tag}>", block, re.S | re.I)
+    if not match:
+        return ""
+    text = re.sub(r"^\s*<!\[CDATA\[|\]\]>\s*$", "", match.group(1).strip())
+    return html_module.unescape(re.sub(r"<[^>]+>", " ", text)).strip()
+
+
+def _feed_date(value: str) -> str | None:
+    value = value.strip()
+    if re.match(r"\d{4}-\d{2}-\d{2}", value):
+        return value[:10]
+    try:
+        return parsedate_to_datetime(value).date().isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def feed_items(soup: BeautifulSoup, home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
+    """Dated posts from the RSS or Atom feed the site itself advertises: real titles and publication dates."""
+    result: dict[str, Any] = {"source_url": None, "content_sha256": None, "items": []}
+    link = soup.select_one('link[rel="alternate"][type*="rss"], link[rel="alternate"][type*="atom"]')
+    if not link or not link.get("href"):
+        return result
+    try:
+        url = urllib.parse.urljoin(home_url, str(link["href"]))
+        domain = _registered_domain(home_url)
+        if _registered_domain(url) != domain:
+            return result
+        text, digest = _fetch_text(url, timeout)
+        if not text:
+            return result
+        result.update({"source_url": url, "content_sha256": digest})
+        for block in re.split(r"<(?:item|entry)[\s>]", text)[1:]:
+            block = block.split("</item>", 1)[0].split("</entry>", 1)[0]
+            atom_link = re.search(r'<link[^>]*href="([^"]+)"', block, re.I)
+            item_url = _feed_field(block, "link") or (atom_link.group(1) if atom_link else "")
+            date = _feed_date(_feed_field(block, "pubDate") or _feed_field(block, "published") or _feed_field(block, "updated"))
+            title = " ".join(_feed_field(block, "title").split())
+            if not (item_url and date and title):
+                continue
+            if _registered_domain(item_url) != domain:
+                continue
+            result["items"].append({"title": title[:300], "url": item_url, "date": date, "source_url": url, "date_basis": "feed_publication_date"})
+            if len(result["items"]) >= MAX_FEED_ITEMS:
+                break
+    except Exception:
+        return result
+    return result
 
 
 def _fetch_text(url: str, timeout: float, max_bytes: int = 1_000_000) -> tuple[str, str | None]:
@@ -144,7 +255,7 @@ def _fetch_text(url: str, timeout: float, max_bytes: int = 1_000_000) -> tuple[s
         return "", None
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/xml,text/xml"})
     with SAFE_OPENER.open(request, timeout=timeout) as response:
-        raw = response.read(max_bytes + 1)
+        raw = _read_capped(response, max_bytes + 1)
     if len(raw) > max_bytes:
         return "", None
     return raw.decode("utf-8", errors="replace"), __import__("hashlib").sha256(raw).hexdigest()
@@ -152,7 +263,7 @@ def _fetch_text(url: str, timeout: float, max_bytes: int = 1_000_000) -> tuple[s
 
 def sitemap_items(home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
     """News and job URLs the site lists in its own sitemap, with its stated lastmod. Bounded and optional."""
-    result: dict[str, Any] = {"source_url": None, "content_sha256": None, "news": [], "jobs": []}
+    result: dict[str, Any] = {"source_url": None, "content_sha256": None, "documents": [], "news": [], "jobs": []}
     parsed_home = urllib.parse.urlparse(home_url)
     root_sitemap = f"{parsed_home.scheme}://{parsed_home.netloc}/sitemap.xml"
     domain = _registered_domain(home_url)
@@ -161,37 +272,43 @@ def sitemap_items(home_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
         if not text:
             return result
         result.update({"source_url": root_sitemap, "content_sha256": digest})
-        documents: list[tuple[str, str | None]] = [(text, None)]
+        documents: list[tuple[str, str | None, str, str | None]] = [(text, None, root_sitemap, digest)]
         if "<sitemapindex" in text:
             children = [item for item in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text) if SITEMAP_CHILD.search(item) and not SITEMAP_NOT_NEWS.search(item)][:3]
             documents = []
             for child in children:
                 if _registered_domain(child) != domain:
                     continue
-                child_text, _ = _fetch_text(child, timeout)
+                child_text, child_digest = _fetch_text(child, timeout)
                 if child_text:
-                    documents.append((child_text, "jobs" if re.search(r"karriere|career|jobb|stilling", child, re.I) else "news"))
-        entries: list[tuple[str, str | None, str | None]] = []
-        for document, kind in documents:
-            for block in re.findall(r"<url>(.*?)</url>", document, re.S):
+                    documents.append((child_text, "jobs" if re.search(r"karriere|career|jobb|stilling", child, re.I) else "news", child, child_digest))
+        result["documents"] = [{"url": source, "sha256": source_digest} for _, _, source, source_digest in documents]
+        entries: list[tuple[str, str | None, str | None, str]] = []
+        for document, kind, source, _ in documents:
+            for block in (piece.split("</url>", 1)[0] for piece in document.split("<url>")[1:]):
                 loc = re.search(r"<loc>\s*([^<\s]+)\s*</loc>", block)
                 lastmod = re.search(r"<lastmod>\s*(\d{4}-\d{2}-\d{2})", block)
                 if loc and _registered_domain(loc.group(1)) == domain:
-                    entries.append((loc.group(1), lastmod.group(1) if lastmod else None, kind))
+                    entries.append((loc.group(1), lastmod.group(1) if lastmod else None, kind, source))
     except Exception:
         return result
     entries.sort(key=lambda item: item[1] or "", reverse=True)
     listing_titles = {"personvern", "informasjonskapsler", "cookies", "privacy", "vilkar", "kontakt", "om oss", "news", "nyheter", "nyhet", "blog", "blogg", "bloggen", "aktuelt", "artikler", "karriere", "career", "careers", "jobb", "jobs", "stillinger", "ledige stillinger", "jobb hos oss"}
-    for url, lastmod, kind in entries:
+    for url, lastmod, kind, source in entries:
         path = urllib.parse.urlparse(url).path
+        path_date = re.search(r"/(20\d{2})/(0?[1-9]|1[0-2])/(0?[1-9]|[12]\d|3[01])(?:/|$)", path)
+        basis = "sitemap_lastmod"
+        if path_date:
+            lastmod = "%s-%02d-%02d" % (path_date.group(1), int(path_date.group(2)), int(path_date.group(3)))
+            basis = "date_in_url"
         depth = len([part for part in path.split("/") if part])
         title = re.sub(r"[-_]+", " ", urllib.parse.unquote(path.rstrip("/").rsplit("/", 1)[-1])).strip()
         if title.casefold() in listing_titles or not title:
             continue
         if depth >= 2 and (kind == "jobs" or JOB_PATH.search(path)) and len(result["jobs"]) < MAX_SITEMAP_ITEMS:
-            result["jobs"].append({"title": title, "date_posted": None, "valid_through": None, "source_url": root_sitemap, "posting_url": url, "sitemap_lastmod": lastmod, "date_basis": "sitemap_lastmod"})
+            result["jobs"].append({"title": title, "date_posted": None, "valid_through": None, "source_url": source, "posting_url": url, "sitemap_lastmod": lastmod, "date_basis": basis})
         elif lastmod and depth >= 1 and (kind == "news" or (depth >= 2 and NEWS_PATH.search(path))) and len(result["news"]) < MAX_SITEMAP_ITEMS:
-            result["news"].append({"title": title, "url": url, "date": lastmod, "source_url": root_sitemap, "date_basis": "sitemap_lastmod"})
+            result["news"].append({"title": title, "url": url, "date": lastmod, "source_url": source, "date_basis": basis})
     return result
 
 
@@ -239,6 +356,9 @@ def assert_public_url(url: str) -> None:
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Any:
         assert_public_url(newurl)
+        old, new = urllib.parse.urlparse(req.full_url), urllib.parse.urlparse(newurl)
+        if new.netloc.lower() != old.netloc.lower() and old.path != "/robots.txt" and not _robots_allowed(newurl, 10.0, if_unreachable=True):
+            raise urllib.error.URLError("redirect target disallowed by robots.txt")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -259,11 +379,11 @@ def normalize_homepage(value: str | None) -> str | None:
 
 def _registered_domain(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
-    ext = tldextract.extract(parsed.hostname or "")
+    ext = _TLD_EXTRACT(parsed.hostname or "")
     return ext.top_domain_under_public_suffix
 
 
-def _robots_allowed(url: str, timeout: float) -> bool:
+def _robots_allowed(url: str, timeout: float, *, if_unreachable: bool = False, _depth: int = 0) -> bool:
     assert_public_url(url)
     parsed = urllib.parse.urlparse(url)
     robots_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "/robots.txt", "", "", ""))
@@ -272,13 +392,20 @@ def _robots_allowed(url: str, timeout: float) -> bool:
     try:
         request = urllib.request.Request(robots_url, headers={"User-Agent": USER_AGENT})
         with SAFE_OPENER.open(request, timeout=timeout) as response:
-            parser.parse(response.read().decode("utf-8", errors="replace").splitlines())
+            final = urllib.parse.urlparse(response.geturl())
+            content_type = response.headers.get("content-type", "").lower()
+            body = _read_capped(response, 500_000).decode("utf-8", errors="replace")
+        if final.path != "/robots.txt" or "html" in content_type:
+            # A redirect or HTML answer is not a robots file. If it moved to another host, that host's own robots.txt decides.
+            if final.netloc.lower() != parsed.netloc.lower() and _depth == 0:
+                return _robots_allowed(urllib.parse.urlunparse((final.scheme, final.netloc, parsed.path or "/", "", "", "")), timeout, if_unreachable=if_unreachable, _depth=1)
+            return True
+        parser.parse(body.splitlines())
         return parser.can_fetch(USER_AGENT, url)
+    except urllib.error.HTTPError as exc:
+        return exc.code < 500  # RFC 9309: a missing robots.txt allows crawling, a server error does not
     except Exception:
-        # An unavailable robots file is not permission to ignore explicit site terms; callers retain
-        # the URL and can route uncertain domains to review. For this bounded homepage POC, allow one
-        # ordinary GET when robots.txt is absent rather than crawl deeper.
-        return True
+        return if_unreachable  # an unreachable robots.txt is not permission to crawl deeper than one homepage GET
 
 
 def _social_links(base_url: str, soup: BeautifulSoup) -> list[dict[str, str]]:
@@ -287,8 +414,11 @@ def _social_links(base_url: str, soup: BeautifulSoup) -> list[dict[str, str]]:
     candidates.extend(str(node.get("data-href") or "") for node in soup.select("[data-href]"))
     candidates.extend(str(node.get("src") or "") for node in soup.select("iframe[src]"))
     for candidate in candidates:
-        url = urllib.parse.urljoin(base_url, candidate)
-        parsed_candidate = urllib.parse.urlparse(url)
+        try:
+            url = urllib.parse.urljoin(base_url, candidate)
+            parsed_candidate = urllib.parse.urlparse(url)
+        except ValueError:
+            continue
         if (parsed_candidate.hostname or "").casefold().removeprefix("www.") == "facebook.com" and parsed_candidate.path.startswith("/plugins/"):
             embedded = urllib.parse.parse_qs(parsed_candidate.query).get("href", [])
             if embedded:
@@ -373,15 +503,18 @@ def _priority_links(base_url: str, soup: BeautifulSoup, limit: int = MAX_SECONDA
     candidates: dict[str, int] = {}
     for anchor in soup.select("a[href]"):
         href = str(anchor.get("href") or "").strip()
-        url = urllib.parse.urljoin(base_url, href)
-        parsed = urllib.parse.urlparse(url)
+        try:
+            url = urllib.parse.urljoin(base_url, href)
+            parsed = urllib.parse.urlparse(url)
+        except ValueError:
+            continue
         if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != base.netloc.lower():
             continue
         haystack = (parsed.path + " " + anchor.get_text(" ", strip=True)).casefold()
         rank = next((index for index, term in enumerate(PRIORITY_TERMS) if term in haystack), None)
         if rank is None:
             continue
-        clean = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", "", ""))
+        clean = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, urllib.parse.quote(parsed.path or "/", safe="/%:@"), "", "", ""))
         if clean.rstrip("/") == base_url.rstrip("/"):
             continue
         candidates[clean] = min(rank, candidates.get(clean, rank))
@@ -395,18 +528,18 @@ def _fetch_secondary_page(url: str, *, homepage_domain: str, timeout: float, max
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"})
     try:
         with SAFE_OPENER.open(request, timeout=timeout) as response:
-            raw = response.read(max_bytes + 1)
+            raw = _read_capped(response, max_bytes + 1)
             elapsed = int((time.monotonic() - started) * 1000)
             final_url = response.geturl()
             if len(raw) > max_bytes or "html" not in response.headers.get("content-type", "").lower():
                 return None, [], 2, len(raw), elapsed, "unsupported or oversized page"
             if _registered_domain(final_url) != homepage_domain:
                 return None, [], 2, len(raw), elapsed, "redirected outside registered domain"
-        page_html = raw.decode("utf-8", errors="replace")
+        page_html = _decode_html(raw)
         page_soup = BeautifulSoup(page_html, "lxml")
         page_text = trafilatura.extract(page_html, url=final_url, include_links=False, include_tables=False, favor_precision=True) or ""
         try:
-            page_metadata = extruct.extract(page_html, base_url=final_url, syntaxes=["json-ld"])
+            page_metadata = extruct.extract(page_html, base_url=final_url, syntaxes=["json-ld"], errors="log")
         except Exception:
             page_metadata = {}
         page = {
@@ -419,8 +552,9 @@ def _fetch_secondary_page(url: str, *, homepage_domain: str, timeout: float, max
             "kind": "jobs" if JOB_PATH.search(final_url) else "news" if NEWS_PATH.search(urllib.parse.urlparse(final_url).path) else "other",
             "listed_jobs": listed_jobs(page_soup, final_url) if JOB_PATH.search(final_url) else [],
             "news_items": news_items(page_soup, final_url) if NEWS_PATH.search(urllib.parse.urlparse(final_url).path) else [],
-            "org_number_excerpt": find_org_number(page_soup.get_text(" ", strip=True), org),
+            "org_number_excerpt": find_org_number(page_soup.get_text(" ", strip=True), org, (hints or {}).get("name_tokens")),
             "address_excerpt": find_address(page_soup.get_text(" ", strip=True), hints),
+            "phone_excerpt": find_phone(page_soup.get_text(" ", strip=True), hints),
         }
         return page, _social_links(final_url, page_soup), 2, len(raw), elapsed, None
     except Exception as exc:
@@ -433,7 +567,7 @@ def _jsonld_organisations(metadata: dict[str, Any]) -> list[dict[str, Any]]:
     def walk(value: Any) -> None:
         if isinstance(value, dict):
             kind = value.get("@type")
-            kinds = set(kind if isinstance(kind, list) else [kind])
+            kinds = {item for item in (kind if isinstance(kind, list) else [kind]) if isinstance(item, str)}
             if kinds & {"Organization", "Corporation", "LocalBusiness", "Store", "Restaurant"}:
                 values.append(value)
             for child in value.values():
@@ -461,14 +595,14 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
     except ValueError as exc:
         status = "not_found" if "resolve" in str(exc) else "blocked"  # a dead domain did not refuse us
         return evidence("website", status, "registry_linked_company_website", normalized, note=str(exc)), {"requests": 0, "bytes": 0, "latencies_ms": []}
-    if not _robots_allowed(normalized, timeout):
+    if not _robots_allowed(normalized, timeout, if_unreachable=True):
         return evidence("website", "blocked", "registry_linked_company_website", normalized, note="robots.txt disallows this user agent"), {"requests": 1, "bytes": 0, "latencies_ms": []}
     started = time.monotonic()
     request = urllib.request.Request(normalized, headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"})
     try:
         with SAFE_OPENER.open(request, timeout=timeout) as response:
             content_type = response.headers.get("content-type", "")
-            raw = response.read(max_bytes + 1)
+            raw = _read_capped(response, max_bytes + 1)
             elapsed = int((time.monotonic() - started) * 1000)
             if len(raw) > max_bytes:
                 return evidence("website", "blocked", "registry_linked_company_website", normalized, note="Homepage exceeds byte limit"), {"requests": 2, "bytes": len(raw), "latencies_ms": [elapsed]}
@@ -476,9 +610,12 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
                 return evidence("website", "source_error", "registry_linked_company_website", normalized, note=f"Unsupported content type: {content_type}"), {"requests": 2, "bytes": len(raw), "latencies_ms": [elapsed]}
             final_url = response.geturl()
             assert_public_url(final_url)
-        html = raw.decode("utf-8", errors="replace")
+        html = _decode_html(raw)
         soup = BeautifulSoup(html, "lxml")
-        structured = extruct.extract(html, base_url=final_url, syntaxes=["json-ld", "microdata", "opengraph"])
+        try:
+            structured = extruct.extract(html, base_url=final_url, syntaxes=["json-ld", "microdata", "opengraph"], errors="log")
+        except Exception:
+            structured = {}
         text = trafilatura.extract(html, url=final_url, include_links=False, include_tables=False, favor_precision=True) or ""
         title = soup.title.get_text(" ", strip=True) if soup.title else ""
         description_tag = soup.select_one('meta[name="description"], meta[property="og:description"]')
@@ -495,15 +632,19 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             "content_sha256": __import__("hashlib").sha256(raw).hexdigest(),
             "extraction_state": _extraction_state(text, soup),
         }
-        home_proof = find_org_number(soup.get_text(" ", strip=True), org)
-        pages = [{"url": final_url, "title": title[:500], "main_text_excerpt": text[:5000], "content_sha256": value["content_sha256"], "stated_dates": _page_dates(structured, soup), "job_postings": job_postings(structured, final_url), "kind": "home", "org_number_excerpt": home_proof, "address_excerpt": find_address(soup.get_text(" ", strip=True), hints)}]
+        home_proof = find_org_number(soup.get_text(" ", strip=True), org, (hints or {}).get("name_tokens"))
+        pages = [{"url": final_url, "title": title[:500], "main_text_excerpt": text[:5000], "content_sha256": value["content_sha256"], "stated_dates": _page_dates(structured, soup), "job_postings": job_postings(structured, final_url), "kind": "home", "org_number_excerpt": home_proof, "address_excerpt": find_address(soup.get_text(" ", strip=True), hints), "phone_excerpt": find_phone(soup.get_text(" ", strip=True), hints)}]
         social = value["social_links"]
         crawl_errors = []
         requests = 2
         bytes_received = len(raw)
         page_latencies = [elapsed]
         homepage_domain = value["registered_domain"]
+        site_deadline = time.monotonic() + SITE_BUDGET_SECONDS
         for page_url in _priority_links(final_url, soup):
+            if time.monotonic() > site_deadline:
+                crawl_errors.append({"url": page_url, "error": "site time budget reached; later pages not read"})
+                continue
             page, page_social, page_requests, page_bytes, page_elapsed, page_error = _fetch_secondary_page(
                 page_url,
                 homepage_domain=homepage_domain,
@@ -522,11 +663,16 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             elif page_error:
                 crawl_errors.append({"url": page_url, "error": page_error})
         value["pages"] = pages
-        value["sitemap"] = sitemap_items(final_url, timeout=min(timeout, 10.0))
+        value["sitemap"] = sitemap_items(final_url, timeout=min(timeout, 10.0)) if time.monotonic() <= site_deadline else {"status": "skipped", "note": "site time budget reached"}
+        value["feed"] = feed_items(soup, final_url, timeout=min(timeout, 10.0)) if time.monotonic() <= site_deadline else {"items": []}
         address_page = next((page for page in pages if page.get("address_excerpt")), None)
         if address_page:
             value["registered_address_found_at"] = address_page["url"]
             value["registered_address_excerpt"] = address_page["address_excerpt"]
+        phone_page = next((page for page in pages if page.get("phone_excerpt")), None)
+        if phone_page:
+            value["registered_phone_found_at"] = phone_page["url"]
+            value["registered_phone_excerpt"] = phone_page["phone_excerpt"]
         proof_page = next((page for page in pages if page.get("org_number_excerpt")), None)
         if proof_page:
             value["org_number_found"] = org

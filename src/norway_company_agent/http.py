@@ -33,7 +33,7 @@ def fetch_json(url: str, *, timeout: float = 20.0, attempts: int = 3) -> FetchRe
         started = time.monotonic()
         request = urllib.request.Request(
             url,
-            headers={"Accept": "application/json", "User-Agent": "builderr-signalpost-poc/0.1 (+https://builderr.ai)"},
+            headers={"Accept": "application/json", "User-Agent": "nightshift-signalpost/1.0 (+https://github.com/nightshift-labs-ai)"},
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -46,7 +46,10 @@ def fetch_json(url: str, *, timeout: float = 20.0, attempts: int = 3) -> FetchRe
             if exc.code in {404, 410}:
                 return FetchResult(url, exc.code, elapsed, len(raw), error=f"HTTP {exc.code}", content_sha256=hashlib.sha256(raw).hexdigest(), retrieved_at=_utc_now())
             last_error = f"HTTP {exc.code}"
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            retry_after = str(exc.headers.get("Retry-After") or "")
+            if exc.code == 429 and retry_after.isdigit() and attempt + 1 < attempts:
+                time.sleep(min(int(retry_after), 20))
+        except Exception as exc:  # connection resets, truncated or undecodable bodies are retried like any other failure
             last_error = type(exc).__name__
         if attempt + 1 < attempts:
             time.sleep(0.4 * (2**attempt))

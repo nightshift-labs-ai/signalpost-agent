@@ -10,6 +10,17 @@ import json
 from typing import Any
 
 UNCERTAIN = {"failed", "blocked", "ambiguous"}
+WEBSITE_FAMILIES = {"official_website", "company_profile", "self_description", "hiring", "public_activity"}
+
+
+def _family(field: str) -> str:
+    return field.split(".")[0]
+
+
+def _uncertain_families(claims: list[dict[str, Any]]) -> set[str]:
+    """Families whose absence this run says nothing about: a failed module, or everything read from a site that could not be verified."""
+    families = {_family(claim["field"]) for claim in claims if claim.get("availability") in UNCERTAIN}
+    return families | WEBSITE_FAMILIES if "official_website" in families else families
 
 
 def _stable(value: Any) -> Any:
@@ -28,9 +39,11 @@ def _key(claim: dict[str, Any]) -> str:
             return claim["field"] + "|" + "|".join(str(value.get(part)) for part in ("name", "role_code"))
         if claim["field"] in {"hiring.job_posting", "public_activity.dated_item"}:
             return claim["field"] + "|" + str(value.get("posting_url") or value.get("url") or value.get("title"))
+        if claim["field"] == "business_address":
+            return claim["field"]
         return claim["field"] + "|" + json.dumps(_stable(value), ensure_ascii=False, sort_keys=True)
     period = claim.get("reporting_period") or {}
-    return claim["field"] + ("|" + json.dumps(period, sort_keys=True) if period else "")
+    return claim["field"] + ("|" + json.dumps(period, sort_keys=True) + "|" + str(claim.get("account_type") or "") if period else "")
 
 
 def _index(claims: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -39,7 +52,13 @@ def _index(claims: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 def diff(current: list[dict[str, Any]], previous: list[dict[str, Any]]) -> list[dict[str, Any]]:
     new, old = _index(current), _index(previous)
-    uncertain_fields = {claim["field"] for claim in current if claim.get("availability") in UNCERTAIN}
+    uncertain_now = _uncertain_families(current)
+    uncertain_before = _uncertain_families(previous)
+    oldest_kept: dict[str, str] = {}
+    for claim in new.values():
+        end = (claim.get("reporting_period") or {}).get("tilDato")
+        if end:
+            oldest_kept[claim["field"]] = min(end, oldest_kept.get(claim["field"], end))
     changes: list[dict[str, Any]] = []
     for key in sorted(set(new) | set(old)):
         before, after = old.get(key), new.get(key)
@@ -47,8 +66,13 @@ def diff(current: list[dict[str, Any]], previous: list[dict[str, Any]]) -> list[
             if _stable(before.get("value")) != _stable(after.get("value")):
                 changes.append({"type": "changed", "field": after["field"], "previous": before["value"], "current": after["value"], "evidence_ids": after.get("evidence_ids"), "previous_evidence_ids": before.get("evidence_ids")})
         elif after:
+            if _family(after["field"]) in uncertain_before:
+                continue  # the source was unavailable last time: seeing it now is not news about the company
             changes.append({"type": "added", "field": after["field"], "current": after["value"], "evidence_ids": after.get("evidence_ids")})
-        elif before and before["field"] not in uncertain_fields:
+        elif before and _family(before["field"]) not in uncertain_now:
+            end = (before.get("reporting_period") or {}).get("tilDato")
+            if end and before["field"] in oldest_kept and end < oldest_kept[before["field"]]:
+                continue  # an older year rolled out of the kept window when a newer filing arrived
             changes.append({"type": "removed", "field": before["field"], "previous": before["value"], "previous_evidence_ids": before.get("evidence_ids")})
     return changes
 
@@ -60,8 +84,7 @@ def apply_previous(envelope: dict[str, Any], previous: dict[str, Any] | None) ->
         return envelope
     envelope["changes"] = diff(envelope["claims"], previous.get("claims") or [])
     carried = {row["id"]: row for row in previous.get("prior_evidence") or []}
-    if envelope["changes"]:
-        carried.update({row["id"] + "@" + str(previous.get("run_id")): {**row, "id": row["id"] + "@" + str(previous.get("run_id"))} for row in previous.get("evidence") or []})
+    carried.update({row["id"] + "@" + str(previous.get("run_id")): {**row, "id": row["id"] + "@" + str(previous.get("run_id"))} for row in previous.get("evidence") or []})
     envelope["prior_evidence"] = list(carried.values())
     envelope["refresh"] = {"previous_run_id": previous.get("run_id"), "first_observation": False, "material_changes": len(envelope["changes"])}
     return envelope

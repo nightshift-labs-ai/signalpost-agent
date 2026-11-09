@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
+import urllib.parse
 
 from .evidence import evidence, utc_now
 from .official import accounting_obligation_assessment
@@ -36,7 +38,7 @@ def read_organisation_inputs(path: str | Path) -> list[dict[str, Any]]:
         values = [line.strip() for line in text.splitlines() if line.strip()]
     records = []
     for value in values:
-        org = value.get("organisation_number") if isinstance(value, dict) else value
+        org = next((value[key] for key in ("organisation_number", "organisasjonsnummer", "orgnr", "organizationNumber") if value.get(key)), None) if isinstance(value, dict) else value
         org = "".join(character for character in str(org or "") if character.isdigit())
         if len(org) != 9:
             raise ValueError(f"Invalid Norwegian organisation number: {value!r}")
@@ -56,6 +58,15 @@ def read_organisation_numbers(path: str | Path) -> list[str]:
     return [record["organisation_number"] for record in read_organisation_inputs(path)]
 
 
+def _filed_domain(website: Any) -> str | None:
+    text = str(website or "").strip().casefold()
+    if not text:
+        return None
+    host = urllib.parse.urlparse(text if "://" in text else "https://" + text).hostname or ""
+    parts = host.split(".")
+    return ".".join(parts[-2:]) if len(parts) >= 2 else None
+
+
 def profiles_from_bulk(path: str | Path, organisation_numbers: Iterable[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     requested = list(organisation_numbers)
     wanted = set(requested)
@@ -63,9 +74,13 @@ def profiles_from_bulk(path: str | Path, organisation_numbers: Iterable[str]) ->
     retrieved_at = utc_now()
     found: dict[str, dict[str, Any]] = {}
     scanned = 0
+    domain_filers: Counter[str] = Counter()
     for profile in iter_bulk(path):
         scanned += 1
         org = profile["organisation_number"]
+        domain = _filed_domain(profile.get("website"))
+        if domain:
+            domain_filers[domain] += 1
         if org not in wanted:
             continue
         raw = profile.pop("raw", {})
@@ -83,16 +98,27 @@ def profiles_from_bulk(path: str | Path, organisation_numbers: Iterable[str]) ->
             "accounting_obligation": accounting_obligation_assessment(profile),
         }
         found[org] = profile
-        if len(found) == len(wanted):
-            break
+    for profile in found.values():
+        domain = _filed_domain(profile.get("website"))
+        profile["registered_domain_filers"] = domain_filers[domain] if domain else 0
     missing = [org for org in requested if org not in found]
-    if missing:
-        raise ValueError(f"Organisation numbers absent from registry snapshot: {missing[:10]}")
+    for org in missing:  # still gets a terminal result; registry_live is fetched for it later like for any other company
+        found[org] = {
+            "organisation_number": org,
+            "name": None,
+            "website": None,
+            "registered_domain_filers": 0,
+            "evidence": {
+                "registry": evidence("registry", "not_found", "official_registry_bulk", "https://data.brreg.no/enhetsregisteret/api/enheter/lastned/csv", note="Not present in the supplied registry snapshot", retrieved_at=retrieved_at, content_sha256=snapshot_sha256),
+                "accounting_obligation": evidence("accounting_obligation", "not_found", "official_registry_bulk", "https://data.brreg.no/enhetsregisteret/api/enheter/lastned/csv", note="No registry row to classify", retrieved_at=retrieved_at),
+            },
+        }
     return [found[org] for org in requested], {
         "registry_snapshot_sha256": snapshot_sha256,
         "registry_rows_scanned": scanned,
         "requested": len(requested),
-        "selected": len(found),
+        "selected": len(found) - len(missing),
+        "missing_from_snapshot": missing,
     }
 
 
@@ -134,6 +160,7 @@ def terminal_envelope(
     claims, claim_evidence, summary = build_claims(profile)
     return {
         "run_id": run_id,
+        "run": {"run_id": run_id, "started_at": started_at, "completed_at": completed_at, "terminal_status": "completed" if entity_state == "complete" else entity_state},
         "organisation_number": profile["organisation_number"],
         "state": entity_state,
         "started_at": started_at,
@@ -145,8 +172,18 @@ def terminal_envelope(
         "changes": [],
         "errors": [{"module": module, "state": item["state"]} for module, item in module_states.items() if item["state"] in {"source_error", "submission_error"}],
         "operations": {"third_party_cost_usd": 0, **{key: value for key, value in (profile.get("run_metrics") or {}).items() if key != "latencies_ms"}},
-        "profile": profile,
+        "profile": _envelope_profile(profile),
     }
+
+
+def _envelope_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    """A site that failed the identity gate stays out of the published envelope; --profiles-output keeps the full record."""
+    website = (profile.get("evidence") or {}).get("website") or {}
+    assessment = (website.get("value") or {}).get("identity_assessment") or {}
+    view = {key: value for key, value in profile.items() if key != "site_discovery"}
+    if website.get("status") == "available" and not assessment.get("publishable"):
+        view["evidence"] = {**profile["evidence"], "website": {"status": "ambiguous", "note": "A candidate site was found but did not pass the identity gate, so it is not published.", "retrieved_at": website.get("retrieved_at")}}
+    return view
 
 
 def validate_envelopes(envelopes: list[dict[str, Any]], expected_count: int) -> dict[str, Any]:

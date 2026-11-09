@@ -32,6 +32,10 @@ def _structured_names(value: Any) -> list[str]:
     return names
 
 
+ANCHOR_TRAILING_WORDS = {"holding", "invest", "investering", "eiendom", "eiendommer", "gruppen", "group", "norge", "norway"}
+SOCIAL_HANDLE_FILLER = {"as", "no", "norge", "norway", "official", "offisiell"}
+
+
 def _registry_domain_anchor(profile: dict[str, Any], hostname: str, core: list[str]) -> bool:
     """The registry itself lists this domain, and it carries the first name token."""
     live = (profile.get("evidence", {}).get("registry_live") or {}).get("value") or {}
@@ -41,7 +45,13 @@ def _registry_domain_anchor(profile: dict[str, Any], hostname: str, core: list[s
     registered = lambda host: ".".join(host.split(".")[-2:])
     filed_host = urllib.parse.urlparse(filed if "://" in filed else "https://" + filed).hostname or ""
     domain = registered(hostname.casefold())
-    return bool(filed_host) and registered(filed_host.casefold()) == domain and core[0] in "".join(domain.split("."))
+    if not filed_host or registered(filed_host.casefold()) != domain:
+        return False
+    if int(profile.get("registered_domain_filers") or 1) > 1:
+        return False  # several registered entities file this domain: a chain, group or shared landlord site
+    label = domain.split(".")[0].replace("-", "")
+    distinctive = [token for token in core if token not in ANCHOR_TRAILING_WORDS]
+    return bool(distinctive) and all(token in label for token in distinctive)
 
 
 def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
@@ -52,11 +62,11 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     structured_names = _structured_names(value.get("structured_organisations") or [])
     rendered = value.get("js_fallback") or {}
     homepage_identity_parts = [
-        value.get("title"), value.get("description"), value.get("identity_text_excerpt"), hostname, *structured_names,
+        value.get("title"), value.get("description"), value.get("identity_text_excerpt"), *structured_names,
         rendered.get("title"),
     ]
     candidate_parts = [
-        *homepage_identity_parts, value.get("main_text_excerpt"),
+        hostname, *homepage_identity_parts, value.get("main_text_excerpt"),
         *[page.get("title") for page in value.get("pages", [])],
         *[page.get("main_text_excerpt") for page in value.get("pages", [])],
         *[page.get("identity_text_excerpt") for page in value.get("pages", [])],
@@ -97,7 +107,7 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     elif len(core) == 1 and exact_homepage_name and substantive_homepage:
         score = 0.95
         reasons.append("single distinctive legal-name token appears in homepage identity evidence with substantive content")
-    elif _registry_domain_anchor(profile, hostname, core):
+    elif substantive_homepage and _registry_domain_anchor(profile, hostname, core):
         score = 0.92
         reasons.append("the registry-filed website's domain contains the entity's distinctive name token and the entity is not in a registered group")
     elif ratio >= 0.75 and len(overlap) >= 2:
@@ -124,23 +134,19 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
 def assess_social_identity(profile: dict[str, Any], link: dict[str, str], site_host: str = "") -> dict[str, Any]:
     core = _tokens(profile.get("name"))
     parsed = urllib.parse.urlparse(link.get("url") or "")
-    handle_text = urllib.parse.unquote(parsed.path)
-    handle_compact = "".join(_tokens(handle_text))
+    segments = [segment for segment in urllib.parse.unquote(parsed.path).split("/") if segment]
+    handle_tokens = _tokens(segments[-1]) if segments else []
+    meaningful = [token for token in handle_tokens if token not in SOCIAL_HANDLE_FILLER]
+    handle_compact = "".join(meaningful)
     matched = [token for token in core if token in handle_compact]
     core_compact = "".join(core)
-    ratio = len(set(matched)) / len(set(core)) if core else 0.0
-    if core_compact and core_compact in handle_compact:
+    site_label = (site_host.casefold().removeprefix("www.").split(".")[0] if site_host else "").replace("-", "")
+    if core_compact and handle_compact == core_compact:
         score = 0.98
-        reason = "normalized legal-name sequence appears in the social handle"
-    elif len(core) == 1 and matched:
-        score = 0.95
-        reason = "single distinctive legal-name token appears in the social handle"
-    elif ratio >= 0.75 and len(set(matched)) >= 2:
-        score = 0.9
-        reason = "most legal-name tokens appear in the social handle"
-    elif core and len(core[0]) >= 4 and core[0] in handle_compact and core[0] in "".join(_tokens(site_host)):
+        reason = "the social handle equals the normalized legal name, apart from words such as 'official' or 'norge'"
+    elif site_label and handle_compact == site_label:
         score = 0.92
-        reason = "linked from the verified company site, and the handle and site domain both carry the entity's first distinctive name token"
+        reason = "linked from the verified company site, and the handle equals the site's domain name"
     else:
         score = 0.3
         reason = "social handle lacks strong exact-entity name evidence"

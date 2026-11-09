@@ -10,7 +10,7 @@ from norway_company_agent.changes import apply_previous, diff  # noqa: E402
 from norway_company_agent.claims import build_claims  # noqa: E402
 from norway_company_agent.discover_site import discover, email_domain, name_candidates  # noqa: E402
 from norway_company_agent.identity import assess_social_identity, assess_website_identity  # noqa: E402
-from norway_company_agent.website import find_address, find_org_number  # noqa: E402
+from norway_company_agent.website import _read_capped, find_address, find_org_number, find_phone  # noqa: E402
 
 ORG = "985589003"
 PROFILE = {"organisation_number": ORG, "name": "GANGSTAD BYGG AS", "evidence": {}}
@@ -53,7 +53,7 @@ def test_guess_with_org_number_is_accepted():
 
 
 def test_email_domain_equal_to_name_is_accepted():
-    sites = {"gangstadbygg.no": site("https://gangstadbygg.no/", title="Velkommen", text="Vi bygger hus. " * 20)}
+    sites = {"gangstadbygg.no": site("https://gangstadbygg.no/", title="Velkommen", text="Gangstad Bygg bygger hus. " * 20)}
     found, _ = discover(PROFILE, "post@gangstadbygg.no", fetch=fake_fetch(sites), dns=lambda _: True)
     assert found is not None
 
@@ -85,8 +85,341 @@ def test_address_needs_postcode_near_street():
     assert find_address("0150 OSLO" + " filler" * 40 + " Storgata", {"postcode": "0150", "street": "Storgata"}) is None
 
 
+def test_email_domain_equal_to_name_needs_the_name_on_the_page():
+    sites = {"gangstadbygg.no": site("https://gangstadbygg.no/", title="Velkommen", text="Beste nettcasino 2026. " * 20)}
+    found, _ = discover(PROFILE, "post@gangstadbygg.no", fetch=fake_fetch(sites), dns=lambda domain: domain == "gangstadbygg.no")
+    assert found is None
+
+
+def test_redirect_to_another_domain_needs_evidence_on_the_landing_page():
+    sites = {"gangstadbygg.no": site("https://www.unrelated-group.com/", title="Global Group plc", text="Gangstad Bygg " * 40)}
+    found, _ = discover(PROFILE, "post@gangstadbygg.no", fetch=fake_fetch(sites), dns=lambda domain: domain == "gangstadbygg.no")
+    assert found is None
+
+
+def test_shared_chain_domain_is_not_an_exact_match():
+    base = {"organisation_number": ORG, "website": "espira.no", "evidence": {"registry_live": {"value": {"website": "espira.no", "in_group": False}}, "website": {"value": {"final_url": "https://espira.no/", "title": "Velkommen til barnehagen", "main_text_excerpt": "Vi driver barnehager i hele landet. " * 6, "pages": []}}}}
+    assert assess_website_identity({**base, "name": "ESPIRA SNURREFJELLET AS"})["publishable"] is False
+    assert assess_website_identity({**base, "name": "ESPIRA HOLDING AS", "registered_domain_filers": 38})["publishable"] is False
+    assert assess_website_identity({**base, "name": "ESPIRA HOLDING AS", "registered_domain_filers": 1})["publishable"] is True
+
+
+def test_org_number_in_a_list_of_units_is_not_proof():
+    listing = "Bunnpris Ski AS org.nr 998 877 665 Bunnpris Vest AS org.nr 912 345 678"
+    assert find_org_number(listing, "912345678", ["kolbotn", "dagligvare"]) is None
+    assert find_org_number("Kolbotn Dagligvare AS org.nr 912 345 678, Bunnpris Ski AS org.nr 998 877 665", "912345678", ["kolbotn"])
+    assert find_org_number("Org.nr 912 345 678", "912345678", ["kolbotn"])
+
+
+def test_social_handle_must_equal_the_name_or_the_site_domain():
+    assert assess_social_identity({"name": "BERGEN ELEKTRO AS"}, {"url": "https://facebook.com/bergenkommune"}, "bergenelektro.no")["publishable"] is False
+    assert assess_social_identity({"name": "HANSEN BYGG AS"}, {"url": "https://linkedin.com/company/hansen-webdesign"}, "hansenbygg.no")["publishable"] is False
+    assert assess_social_identity({"name": "NOVOOI AS"}, {"url": "https://facebook.com/novooi.official"}, "novooi.com")["publishable"] is True
+    assert assess_social_identity({"name": "RB PROFF PARTNER AS"}, {"url": "https://facebook.com/rbproffpartner"}, "rbproffpartner.no")["publishable"] is True
+
+
+def test_job_path_does_not_match_ordinary_words():
+    from norway_company_agent.website import JOB_PATH
+    assert JOB_PATH.search("/forestillinger") is None and JOB_PATH.search("/utstillinger/2026") is None and JOB_PATH.search("/bestilling/kvittering") is None
+    assert JOB_PATH.search("/ledige-stillinger") and JOB_PATH.search("/stillinger/") and JOB_PATH.search("/jobb-hos-oss")
+
+
+def test_snapshot_without_the_company_still_gives_a_terminal_profile(tmp_path):
+    from norway_company_agent.batch import profiles_from_bulk
+    bulk = tmp_path / "bulk.csv"
+    bulk.write_text('organisasjonsnummer,navn,hjemmeside\n"111111111","A AS","a.no"\n"222222222","B AS","a.no"\n', encoding="utf-8")
+    profiles, meta = profiles_from_bulk(bulk, ["111111111", "333333333"])
+    assert [p["organisation_number"] for p in profiles] == ["111111111", "333333333"]
+    assert profiles[0]["registered_domain_filers"] == 2 and profiles[1]["evidence"]["registry"]["status"] == "not_found"
+    assert meta["missing_from_snapshot"] == ["333333333"]
+
+
+def test_wikidata_site_is_only_a_candidate():
+    good = {"gangstadbygg.no": site("https://gangstadbygg.no/", org_found=True)}
+    found, _ = discover(PROFILE, None, extra_sites=["https://www.gangstadbygg.no/om"], fetch=fake_fetch(good), dns=lambda domain: domain == "gangstadbygg.no")
+    assert found["value"]["discovery"]["origin"] == "wikidata_official_website"
+    unrelated = {"coop.no": site("https://coop.no/", title="Coop", text="Butikker over hele landet. " * 20)}
+    found, metrics = discover(PROFILE, None, extra_sites=["https://www.coop.no/x"], fetch=fake_fetch(unrelated), dns=lambda domain: domain == "coop.no")
+    assert found is None and metrics["candidates"][0]["outcome"] == "rejected_identity"
+
+
+def _site_profile():
+    url = "https://gangstadbygg.no/"
+    value = {"final_url": url, "title": "Gangstad Bygg AS", "description": "", "main_text_excerpt": "x" * 200, "social_links": [], "structured_organisations": [{"name": "Gangstad"}], "org_number_found_at": url + "kontakt",
+             "pages": [{"url": url, "title": "Gangstad Bygg AS"}, {"url": url + "kontakt", "title": "Kontakt", "org_number_excerpt": "Org.nr 985 589 003"}],
+             "identity_assessment": {"publishable": True, "score": 1.0, "reasons": ["x"], "method": "m"}}
+    group = {"status": "available", "source_url": "https://g", "value": {"children": [{"organisasjonsnummer": "111111111", "navn": "Datter AS", "knytningsform": {"beskrivelse": "Konsern datter", "kode": "KDAT"}, "dato": "2020-01-01"}, {"organisasjonsnummer": ORG, "navn": "Self"}]}}
+    return {"organisation_number": ORG, "name": "GANGSTAD BYGG AS", "evidence": {"website": {"status": "available", "source_url": url, "retrieved_at": "t", "value": value}, "group": group}}
+
+
+def test_website_claim_cites_the_page_that_proved_it():
+    claims, rows, _ = build_claims(_site_profile())
+    site_claim = next(c for c in claims if c["field"] == "official_website")
+    proof = next(r for r in rows if r["id"] == site_claim["evidence_ids"][1])
+    assert proof["source_url"].endswith("/kontakt") and "985 589 003" in proof["claim_span"]
+    assert all(row.get("extraction_method") for row in rows)
+
+
+def test_public_brand_and_group_links_are_published():
+    claims, _, _ = build_claims(_site_profile())
+    assert next(c for c in claims if c["field"] == "public_brand")["value"] == "Gangstad"
+    links = [c for c in claims if c["field"] == "group.link"]
+    assert len(links) == 1 and links[0]["value"]["relationship_code"] == "KDAT"
+
+
+def test_sitemap_items_cite_the_child_file_and_prefer_a_date_in_the_url(monkeypatch):
+    import norway_company_agent.website as website_module
+    pages = {
+        "https://a.no/sitemap.xml": ("<sitemapindex><sitemap><loc>https://a.no/post-sitemap.xml</loc></sitemap></sitemapindex>", "root-hash"),
+        "https://a.no/post-sitemap.xml": ("<urlset><url><loc>https://a.no/2018/08/16/kraftverk/</loc><lastmod>2024-10-17</lastmod></url></urlset>", "child-hash"),
+    }
+    monkeypatch.setattr(website_module, "_fetch_text", lambda url, timeout, max_bytes=1000000: pages.get(url, ("", None)))
+    result = website_module.sitemap_items("https://a.no/")
+    assert result["news"][0]["source_url"] == "https://a.no/post-sitemap.xml" and result["news"][0]["date"] == "2018-08-16" and result["news"][0]["date_basis"] == "date_in_url"
+    assert {"url": "https://a.no/post-sitemap.xml", "sha256": "child-hash"} in result["documents"]
+
+
+def test_decode_html_honours_latin1():
+    from norway_company_agent.website import _decode_html
+    html = '<html><head><meta charset="iso-8859-1"><title>Bj\xf8rn Bygg AS</title></head></html>'.encode("latin-1")
+    assert "Bjørn Bygg AS" in _decode_html(html)
+
+
+def test_sitemap_with_unclosed_url_tags_stays_linear(monkeypatch):
+    import time as _time
+    import norway_company_agent.website as website_module
+    body = "<urlset>" + "<url><loc>https://a.no/x</loc>" * 8000 + "</urlset>"
+    monkeypatch.setattr(website_module, "_fetch_text", lambda url, timeout, max_bytes=1000000: (body, "h") if url.endswith("/sitemap.xml") else ("", None))
+    started = _time.monotonic()
+    website_module.sitemap_items("https://a.no/")
+    assert _time.monotonic() - started < 3
+
+
+def test_write_jsonl_survives_a_lone_surrogate(tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("batch_cli", Path(__file__).parents[1] / "scripts" / "run_competition_batch.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    target = tmp_path / "out.jsonl"
+    module.write_jsonl(target, [{"title": "a\ud83db"}])
+    assert target.read_text(encoding="utf-8").strip()
+
+
+def test_rejected_site_stays_out_of_the_envelope_profile():
+    from norway_company_agent.batch import _envelope_profile
+    website = {"status": "available", "retrieved_at": "t", "value": {"final_url": "https://7-eleven.no/", "title": "7-Eleven", "identity_assessment": {"publishable": False}}}
+    view = _envelope_profile({"organisation_number": ORG, "site_discovery": {"candidates": [{"domain": "7-eleven.no"}]}, "evidence": {"website": website}})
+    assert view["evidence"]["website"]["status"] == "ambiguous" and "value" not in view["evidence"]["website"] and "site_discovery" not in view
+
+
+def _fake_response(body: bytes, url: str, content_type: str = "text/plain"):
+    class Response:
+        headers = {"content-type": content_type}
+
+        def __init__(self):
+            self.remaining = [body]
+
+        def geturl(self):
+            return url
+
+        def read1(self, _amount):
+            return self.remaining.pop(0) if self.remaining else b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+    return Response()
+
+
+def test_robots_redirect_to_another_host_uses_that_hosts_rules(monkeypatch):
+    import norway_company_agent.website as website_module
+    answers = {
+        "https://a.no/robots.txt": _fake_response(b"<html>home</html>", "http://www.a.no/", "text/html"),
+        "http://www.a.no/robots.txt": _fake_response(b"User-agent: *\nDisallow: /\n", "http://www.a.no/robots.txt"),
+    }
+    monkeypatch.setattr(website_module, "assert_public_url", lambda url: None)
+    monkeypatch.setattr(website_module.SAFE_OPENER, "open", lambda request, timeout=None: answers[request.full_url])
+    assert website_module._robots_allowed("https://a.no/", 5.0, if_unreachable=True) is False
+
+
+def test_html_answer_for_robots_on_the_same_host_is_no_robots_file(monkeypatch):
+    import norway_company_agent.website as website_module
+    monkeypatch.setattr(website_module, "assert_public_url", lambda url: None)
+    monkeypatch.setattr(website_module.SAFE_OPENER, "open", lambda request, timeout=None: _fake_response(b"<html>home</html>", "https://a.no/", "text/html"))
+    assert website_module._robots_allowed("https://a.no/x", 5.0) is True
+
+
+def test_feed_items_reads_rss_and_atom_with_real_titles(monkeypatch):
+    import norway_company_agent.website as website_module
+    from bs4 import BeautifulSoup
+    rss = '<rss><channel><item><title><![CDATA[Fasadeendring p\u00e5 Bryggen]]></title><link>https://a.no/fasade/</link><pubDate>Thu, 16 Aug 2018 10:00:00 +0000</pubDate></item><item><title>Elsewhere</title><link>https://other.no/x</link><pubDate>Thu, 16 Aug 2018 10:00:00 +0000</pubDate></item></channel></rss>'
+    monkeypatch.setattr(website_module, "_fetch_text", lambda url, timeout, max_bytes=1000000: (rss, "h"))
+    soup = BeautifulSoup('<link rel="alternate" type="application/rss+xml" href="/feed/">', "lxml")
+    result = website_module.feed_items(soup, "https://a.no/")
+    assert result["items"] == [{"title": "Fasadeendring p\u00e5 Bryggen", "url": "https://a.no/fasade/", "date": "2018-08-16", "source_url": "https://a.no/feed/", "date_basis": "feed_publication_date"}]
+    atom = '<feed><entry><title>Ny butikk</title><link rel="alternate" href="https://a.no/ny/"/><published>2026-03-01T08:00:00Z</published></entry></feed>'
+    monkeypatch.setattr(website_module, "_fetch_text", lambda url, timeout, max_bytes=1000000: (atom, "h"))
+    assert website_module.feed_items(soup, "https://a.no/")["items"][0]["date"] == "2026-03-01"
+
+
+def _available(field, value, **extra):
+    return {"field": field, "value": value, "availability": "available", "evidence_ids": ["ev-x"], **extra}
+
+
+def test_refresh_does_not_report_a_failed_module_as_removed():
+    from norway_company_agent.changes import diff
+    period = {"fraDato": "2024-01-01", "tilDato": "2024-12-31"}
+    previous = [_available("financials.revenue", 100.0, reporting_period=period), _available("official_website", "https://a.no/"), _available("company_profile.facebook", "https://facebook.com/a")]
+    current = [{"field": "financials", "value": None, "availability": "failed", "evidence_ids": []}, {"field": "official_website", "value": None, "availability": "failed", "evidence_ids": []}]
+    assert diff(current, previous) == []
+
+
+def test_refresh_is_silent_when_a_source_comes_back_and_when_a_year_rolls_off():
+    from norway_company_agent.changes import diff
+    old_period = {"fraDato": "2022-01-01", "tilDato": "2022-12-31"}
+    new_period = {"fraDato": "2025-01-01", "tilDato": "2025-12-31"}
+    previous = [{"field": "official_website", "value": None, "availability": "failed", "evidence_ids": []}, _available("financials.revenue", 1.0, reporting_period=old_period)]
+    current = [_available("official_website", "https://a.no/"), _available("financials.revenue", 2.0, reporting_period=new_period)]
+    changes = diff(current, previous)
+    assert [c["field"] for c in changes] == ["financials.revenue"] and changes[0]["type"] == "added"
+
+
+def test_refresh_keeps_account_types_apart():
+    from norway_company_agent.changes import diff
+    period = {"fraDato": "2025-01-01", "tilDato": "2025-12-31"}
+    previous = [_available("financials.revenue", 100.0, reporting_period=period, account_type="SELSKAP"), _available("financials.revenue", 900.0, reporting_period=period, account_type="KONSERN")]
+    current = [_available("financials.revenue", 150.0, reporting_period=period, account_type="SELSKAP"), _available("financials.revenue", 900.0, reporting_period=period, account_type="KONSERN")]
+    assert [c["type"] for c in diff(current, previous)] == ["changed"]
+
+
+def test_prior_evidence_is_kept_on_an_unchanged_refresh():
+    from norway_company_agent.changes import apply_previous
+    evidence_row = {"id": "ev-registry", "source_url": "https://x", "content_sha256": "h"}
+    envelope = {"claims": [], "evidence": []}
+    apply_previous(envelope, {"run_id": "r1", "claims": [], "evidence": [evidence_row]})
+    assert envelope["prior_evidence"] and envelope["prior_evidence"][0]["id"] == "ev-registry@r1"
+
+
+def _money_claim(field, value, end, account="SELSKAP"):
+    return {"field": field, "value": value, "availability": "available", "currency": "NOK", "account_type": account, "reporting_period": {"fraDato": end[:4] + "-01-01", "tilDato": end}}
+
+
+class Drip:
+    def __init__(self, parts):
+        self.parts = list(parts)
+
+    def read1(self, _amount):
+        return self.parts.pop(0) if self.parts else b""
+
+
+def test_read_capped_stops_at_the_limit_and_at_end_of_body():
+    assert _read_capped(Drip([b"abc", b"def"]), 4) == b"abcdef"[:6]
+    assert _read_capped(Drip([b"ab", b"cd"]), 100) == b"abcd"
+
+
+def test_read_capped_gives_up_on_a_slow_drip():
+    class Slow:
+        def read1(self, _amount):
+            import time as _time
+            _time.sleep(0.02)
+            return b"x"
+    try:
+        _read_capped(Slow(), 10_000, deadline_seconds=0.05)
+    except TimeoutError:
+        return
+    raise AssertionError("expected a timeout")
+
+
+def address_site(url: str, title: str) -> dict:
+    site_value = site(url, title=title, text="Vi lager apper. " * 20)
+    site_value["value"]["registered_address_found_at"] = url + "kontakt"
+    site_value["value"]["registered_address_excerpt"] = "Bjornstadveien 16, 1712 Gralum"
+    return site_value
+
+
+def test_name_domain_with_registered_address_is_accepted_even_after_a_redirect():
+    found, _ = discover(PROFILE, None, fetch=fake_fetch({"gangstadbygg.no": address_site("https://www.studiox.no/", "Studio X")}), dns=lambda domain: domain == "gangstadbygg.no")
+    assert found is not None
+    reasons = found["value"]["identity_assessment"]["reasons"]
+    assert any("equals the legal name" in reason for reason in reasons) and any("redirects to this site" in reason for reason in reasons)
+    assert found["value"]["discovery"]["candidate"] == "gangstadbygg.no"
+
+
+def test_other_domain_with_registered_address_stays_rejected():
+    found, _ = discover(PROFILE, None, fetch=fake_fetch({"gangstad.no": address_site("https://gangstad.no/", "Annet Firma")}), dns=lambda domain: domain == "gangstad.no")
+    assert found is None
+
+
+def test_accepted_site_reports_the_real_basis_not_the_gate_text():
+    sites = {"gangstadbygg.no": site("https://gangstadbygg.no/", title="Velkommen", text="Gangstad Bygg bygger hus. " * 20)}
+    found, _ = discover(PROFILE, "post@gangstadbygg.no", fetch=fake_fetch(sites), dns=lambda domain: domain == "gangstadbygg.no")
+    reasons = found["value"]["identity_assessment"]["reasons"]
+    assert reasons == ["the domain gangstadbygg.no equals the legal name"]
+
+
+def test_summary_uses_the_latest_year_whatever_the_claim_order():
+    from norway_company_agent.claims import _financial_sentences
+    claims = [_money_claim("financials.revenue", 300.0, "2023-12-31"), _money_claim("financials.revenue", 200.0, "2024-12-31"), _money_claim("financials.revenue", 100.0, "2025-12-31"), _money_claim("financials.annual_result", 7.0, "2025-12-31")]
+    sentences = _financial_sentences(claims)
+    assert "2025-12-31 was 100 NOK, with an annual result of 7 NOK" in sentences[0]
+    assert "200 NOK in the period ending 2024-12-31" in sentences[1] and "(-50.0%)" in sentences[1]
+    assert _financial_sentences(list(reversed(claims))) == sentences
+
+
+def test_summary_does_not_compare_across_a_filing_gap_or_a_zero_base():
+    from norway_company_agent.claims import _financial_sentences
+    gap = [_money_claim("financials.revenue", 100.0, "2025-12-31"), _money_claim("financials.revenue", 50.0, "2022-12-31")]
+    assert len(_financial_sentences(gap)) == 1
+    zero = [_money_claim("financials.revenue", 100.0, "2025-12-31"), _money_claim("financials.revenue", 0.0, "2024-12-31")]
+    assert "%" not in _financial_sentences(zero)[1]
+
+
+def test_summary_without_revenue_reports_the_result_and_says_revenue_is_absent():
+    from norway_company_agent.claims import _financial_sentences
+    sentences = _financial_sentences([_money_claim("financials.annual_result", -35903.0, "2025-12-31")])
+    assert "no revenue figure was filed" in sentences[0] and "-35,903 NOK" in sentences[0]
+    assert _financial_sentences([]) == []
+
+
+def test_name_candidates_keep_the_order_and_add_wider_guesses_last():
+    names = name_candidates("Bjørn Hansen Transport AS")
+    assert names[0] == "bjornhansentransport.no" and names[1] == "bjornhansentransport.com"
+    assert "bjoernhansentransport.no" in names and "hansentransport.no" in names
+    assert names.index("bjornhansen.no") < names.index("hansentransport.no")
+    assert len(names) <= 14
+
+
+def test_phone_match_ignores_spacing_and_refuses_a_longer_digit_run():
+    hints = {"phones": ["+47 22 33 44 55"]}
+    assert find_phone("Ring oss på 22 33 44 55 i dag", hints)
+    assert find_phone("Tlf +47 223 34 455", hints)
+    assert find_phone("Kontonummer 1222334455 00", hints) is None
+    assert find_phone("Ring 22 33 44 56", hints) is None
+
+
+def phone_site(title: str, url: str = "https://gangstadbygg.no/") -> dict:
+    site_value = site(url, title=title, text="Vi bygger hus. " * 20)
+    site_value["value"]["registered_phone_found_at"] = url + "kontakt"
+    site_value["value"]["registered_phone_excerpt"] = "Tlf 22 33 44 55"
+    return site_value
+
+
+def test_guess_with_registered_phone_needs_all_name_tokens():
+    found, _ = discover(PROFILE, None, fetch=fake_fetch({"gangstadbygg.no": phone_site("Gangstad Bygg AS")}), dns=lambda domain: domain == "gangstadbygg.no")
+    assert found is not None and found["value"]["discovery"]["registered_phone_on_site"] is True
+    found, _ = discover(PROFILE, None, fetch=fake_fetch({"gangstad.no": phone_site("Annet Firma AS", "https://gangstad.no/")}), dns=lambda domain: domain == "gangstad.no")
+    assert found is None
+
+
+def test_registered_phone_on_a_domain_equal_to_the_legal_name_is_accepted():
+    found, _ = discover(PROFILE, None, fetch=fake_fetch({"gangstadbygg.no": phone_site("Annet Firma AS")}), dns=lambda domain: domain == "gangstadbygg.no")
+    assert found is not None
+
+
 def test_group_member_does_not_get_the_registry_domain_anchor():
-    profile = {"organisation_number": ORG, "name": "BEKK HOLDING AS", "website": "www.bekk.no", "evidence": {"registry_live": {"value": {"website": "www.bekk.no", "in_group": True}}, "website": {"value": {"final_url": "https://www.bekk.no/", "title": "Bekk", "pages": []}}}}
+    profile = {"organisation_number": ORG, "name": "BEKK HOLDING AS", "website": "www.bekk.no", "evidence": {"registry_live": {"value": {"website": "www.bekk.no", "in_group": True}}, "website": {"value": {"final_url": "https://www.bekk.no/", "title": "Bekk", "main_text_excerpt": "Bekk lager digitale tjenester. " * 5, "pages": []}}}}
     assert assess_website_identity(profile)["publishable"] is False
     profile["evidence"]["registry_live"]["value"]["in_group"] = False
     assert assess_website_identity(profile)["publishable"] is True
@@ -102,7 +435,7 @@ def test_unverified_site_yields_ambiguous_and_no_site_facts():
     profile = {"organisation_number": ORG, "name": "X AS", "evidence": {"website": {"status": "available", "source_url": "https://x.no", "value": {"identity_assessment": {"publishable": False, "reasons": ["weak"]}, "final_url": "https://x.no", "description": "marketing"}}}}
     claims, _, _ = build_claims(profile)
     assert {"official_website", "hiring.job_posting"} <= {c["field"] for c in claims if c["availability"] == "ambiguous"}
-    assert not [c for c in claims if c["field"] == "self_description"]
+    assert all(c["value"] is None and c["availability"] == "ambiguous" for c in claims if c["field"] == "self_description")
 
 
 def test_absence_is_not_zero():
@@ -120,7 +453,7 @@ def test_failed_refresh_is_not_a_removal():
 def test_refresh_is_idempotent_and_keeps_evidence_on_change():
     claims = [{"field": "a", "value": 1, "availability": "available"}]
     same = apply_previous({"claims": claims, "run_id": "r2"}, {"claims": claims, "run_id": "r1", "evidence": [{"id": "ev-1"}]})
-    assert same["changes"] == [] and same["prior_evidence"] == []
+    assert same["changes"] == [] and same["prior_evidence"] == [{"id": "ev-1@r1"}]
     changed = apply_previous({"claims": [{"field": "a", "value": 2, "availability": "available"}], "run_id": "r2"}, {"claims": claims, "run_id": "r1", "evidence": [{"id": "ev-1"}]})
     assert changed["changes"][0]["type"] == "changed"
     assert changed["prior_evidence"][0]["id"] == "ev-1@r1"

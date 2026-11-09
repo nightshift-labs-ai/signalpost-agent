@@ -16,15 +16,23 @@ No API key, no model, no paid service: `third_party_cost_usd` is 0. Add `--previ
 
 ## What this adds to the starter
 
-- **Site discovery without a search API** (`discover_site.py`). When the registry lists no working site, candidates come from the registered email domain, then from domains derived from the legal name. A candidate is published only with proof: the exact organisation number on the site; or, for the registered email domain, all legal-name tokens; or, for a name-derived domain, the registered address together with all legal-name tokens. A domain outside `.no` always needs the organisation number, because it is often the foreign parent's site.
-- **Identity gates** (`identity.py`). Parked and generic pages are rejected. A registry-filed domain carrying the entity's first distinctive name token counts as exact only when the entity is not part of a registered group. Social profiles are published only when the verified site links them and the handle matches.
+- **Site discovery without a search API** (`discover_site.py`). When the registry lists no working site, candidates come from the registered email domain, then from domains derived from the legal name. A candidate is published only with proof: the exact organisation number on the site; or the registered phone number or business address together with all legal-name tokens, or with a domain name equal to the legal name (a redirect from that domain is reported as such); or, for the registered email domain, all legal-name tokens. A domain outside `.no` always needs the organisation number, because it is often the foreign parent's site. The claim names the actual basis for each site.
+- **Identity gates** (`identity.py`). Parked and generic pages are rejected. A registry-filed domain counts as exact only when every distinctive name token is in the domain, no other company files that domain, the entity is not in a registered group and the homepage has real text. A hostname never counts as name evidence. Social profiles are published only when the verified site links them and the handle equals the legal name or the site's domain name. Failed sites and rejected candidates stay out of the envelope's `profile` section.
 - **Contract claims** (`claims.py`). One explicit state per information type (`available`, `not_available`, `blocked`, `not_applicable`, `ambiguous`, `failed`). Absence is never turned into zero, and an unverified site produces `ambiguous` rather than facts.
-- **Evidence from company pages** (`website.py`). Up to 8 priority pages, schema.org JobPosting, page-stated dates, with hash and source for each.
+- **Evidence from company pages** (`website.py`). Up to 8 priority pages, schema.org JobPosting, page-stated dates, sitemap items that cite the sitemap file they were read from, with hash, source and extraction method for each. The official-website claim cites the page holding the deciding identity proof.
 - **Refresh as a diff** (`changes.py`). Stable claim keys, prior evidence carried forward, idempotent, and a failed refresh is never reported as a removal.
 
 ## Browse the results
 
 `python scripts/build_site.py --envelopes out/envelopes.jsonl --output site/index.html` builds one static page, for phone and desktop: find a company, compare two side by side, and open the source of any fact.
+
+## Sources, secrets and outbound URLs
+
+- **Sources:** Brønnøysundregistrene open data under NLOD 2.0 (the supplied bulk snapshot, and the registry, accounts, roles and subunit APIs), and each company's own website. `data/wikidata_org_websites.json` is a bundled snapshot of Wikidata (CC0; organisation number to official website, exported 9 Nov 2026). It only proposes candidate domains: a candidate must still pass the identity rules. Nothing else is fetched, and no third-party connector is used in a batch run.
+- **Secrets:** none. The batch needs no API key. The only environment variable it reads is the optional `SIGNALPOST_MAX_SECONDS`.
+- **Outbound URLs:** http and https only. Private, loopback and link-local addresses are refused, also on redirects. Secondary pages and sitemaps must stay on the site's registered domain. Page, robots and sitemap reads have byte limits, a per-read timeout and a wall-clock limit; DNS has its own deadline.
+- **robots.txt:** respected. A missing file (4xx) allows crawling; a server error, or an unreachable file for anything beyond one homepage request, does not.
+- **Rights:** published website facts are limited to short excerpts, each with its URL, retrieval time and hash. `requirements.txt` is the pinned install path; the starter's `uv.lock` is not used.
 
 ## Limits, stated plainly
 

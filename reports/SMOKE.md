@@ -1,13 +1,12 @@
-# Smoke test, run smoke-008 (2026-11-09)
+# Smoke test, run smoke-010 (2026-11-09)
 
 100 companies from `select_entry_batch.py` (default seed). Real Brønnøysund bulk snapshot. No API key, no paid service.
 
-- 100 of 100 terminal envelopes, zero silent drops (`smoke-report.json`), 2 min 8 s on 4 CPU cores.
-- 912 requests, p50 469 ms, p95 1,055 ms, third-party cost 0.
-- 8 of 100 companies have a published official website; 2 more sites are held as `ambiguous` because they failed the identity gate.
-- 5 of the 8 had no working website in the registry and were found through registry-derived candidates; the URL and page title of all 8 were read by hand against the company name, and the 2 with the organisation number on the site were confirmed exact.
-- Refresh check (previous run of this batch): 0 changes on 99 companies, 1 correct removal (a parked domain caught by the identity gate).
-- 21 dated activity items from company-owned sitemaps on 3 companies; these dates are sitemap lastmod values, labelled as such, and may be later edits rather than first publication.
-- A second 100-company sample was read by hand: 8 sites published, and the one parent-company site it exposed is now rejected by code and a test.
+- 100 of 100 terminal envelopes, validation passed: True (`smoke-report.json`). Run time 150.3 s; 901 requests, p50 506 ms, p95 1472 ms, third-party cost 0.
+- 8 of 100 companies have a published official website; 0 more sites are held as `ambiguous` because they failed the identity gate.
+- How each published site was found: legal_name_guess 5, registry_filed_website 3.
+- Identity basis: registered address on the site 4, organisation number on the site 2, registered phone on the site 1, name evidence only 1.
+- 57 dated activity items on 4 companies and 0 job postings, all from company-owned pages, feeds or sitemaps; a date from a sitemap is labelled as a lastmod value and may be a later edit.
+- A second 100-company sample, run on the code just before the last robots.txt and feed changes: 9 sites published, each read one by one; 4 further candidates were held as ambiguous.
 
-Most companies in this universe have no web presence, so a low website count is expected. These figures are our own measurements, not Builderr scores.
+Most companies in this universe have no web presence, so a low website count is expected. These figures are our own measurements, not Builderr scores. The published sites were reviewed one by one by the operating AI agent, not by a person.

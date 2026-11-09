@@ -142,7 +142,10 @@ def deterministic_financial_filer_sample(
 
 
 def iter_bulk(path: str | Path) -> Iterable[dict[str, Any]]:
-    with gzip.open(path, "rt", encoding="utf-8-sig", newline="") as handle:
+    with open(path, "rb") as probe:
+        is_gzip = probe.read(2) == b"\x1f\x8b"
+    opener = gzip.open if is_gzip else open
+    with opener(path, "rt", encoding="utf-8-sig", newline="") as handle:
         # The Brønnøysund export is standard CSV (doubled quotes inside quoted fields). Pick the
         # delimiter from the header line only; csv.Sniffer can misread a valid quoted row as
         # doublequote=False and shift every field after it.
