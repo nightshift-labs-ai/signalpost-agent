@@ -4,14 +4,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from norway_company_agent.batch import profile_complete_for_modules, profiles_from_bulk, read_organisation_inputs, terminal_envelope, validate_envelopes  # noqa: E402
-from norway_company_agent.evidence import utc_now  # noqa: E402
+from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
 from norway_company_agent.identity import apply_website_identity_gate  # noqa: E402
 from norway_company_agent.official import fetch_official_modules  # noqa: E402
 from norway_company_agent.website import fetch_website  # noqa: E402
@@ -28,6 +30,15 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
     temporary.replace(path)
 
 
+def mark_unfinished(profile: dict, modules: list[str], reason: str) -> None:
+    """Give every module a terminal `source_error` record, so an unfinished company is reported, not dropped."""
+    records = profile.setdefault("evidence", {})
+    for module in modules:
+        record = records.get(module)
+        if not record or record.get("status") == "not_fetched":
+            records[module] = evidence(module, "source_error", "run_budget", "urn:signalpost:run-budget", note=reason)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluator-owned Signalpost batch contract")
     parser.add_argument("--organisations", required=True, help="JSON, JSONL, or text organisation-number list")
@@ -39,6 +50,7 @@ def main() -> None:
     parser.add_argument("--expected-count", type=int, default=100)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--checkpoint-every", type=int, default=25)
+    parser.add_argument("--max-seconds", type=float, default=float(os.environ.get("SIGNALPOST_MAX_SECONDS", "5400")), help="Hard run budget. Companies not finished by then get an explicit failed result instead of being dropped.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--previous", help="Envelope JSONL from an earlier run; enables the refresh diff")
     parser.add_argument("--modules", default="registry,accounting_obligation,registry_live,financials,roles,group,locations,website")
@@ -104,10 +116,17 @@ def main() -> None:
         }
         resumed_profiles = len(state)
     pending_profiles = [profile for profile in profiles if profile["organisation_number"] not in state]
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(enrich, profile): profile["organisation_number"] for profile in pending_profiles}
-        for index, future in enumerate(as_completed(futures), 1):
-            profile, metric = future.result()
+    deadline = time.monotonic() + args.max_seconds
+    timed_out: list[str] = []
+    pool = ThreadPoolExecutor(max_workers=args.workers)
+    futures = {pool.submit(enrich, profile): profile for profile in pending_profiles}
+    try:
+        for index, future in enumerate(as_completed(futures, timeout=max(0.0, deadline - time.monotonic())), 1):
+            try:
+                profile, metric = future.result()
+            except Exception as exc:  # one bad company must never lose the run
+                profile, metric = futures[future], {"requests": 0, "bytes": 0, "latencies_ms": []}
+                mark_unfinished(profile, requested_modules, f"{type(exc).__name__}: {str(exc)[:160]}")
             state[profile["organisation_number"]] = profile
             operations["requests"] += metric["requests"]
             operations["bytes"] += metric["bytes"]
@@ -115,6 +134,13 @@ def main() -> None:
             if index % args.checkpoint_every == 0 or index == len(pending_profiles):
                 checkpoint = [state[org] for org in orgs if org in state]
                 write_jsonl(profiles_output, checkpoint)
+    except FuturesTimeout:
+        pool.shutdown(wait=False, cancel_futures=True)
+        for future, profile in futures.items():
+            if profile["organisation_number"] not in state:
+                mark_unfinished(profile, requested_modules, "run time budget reached before this company finished")
+                state[profile["organisation_number"]] = profile
+                timed_out.append(profile["organisation_number"])
 
     completed_at = utc_now()
     ordered_profiles = [state[org] for org in orgs]
@@ -139,6 +165,7 @@ def main() -> None:
         "expected_count": args.expected_count,
         "emitted_envelopes": len(envelopes),
         "resumed_profiles": resumed_profiles,
+        "unfinished_at_time_budget": len(timed_out),
         "profiles_fetched_this_run": len(pending_profiles),
         "modules": requested_modules,
         "registry": registry_metadata,
@@ -148,7 +175,9 @@ def main() -> None:
     Path(args.report).parent.mkdir(parents=True, exist_ok=True)
     Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    raise SystemExit(0 if validation["passed"] else 1)
+    sys.stdout.flush()
+    # Abandoned worker threads may still sit in a network timeout; they must not hold the process open.
+    os._exit(0 if validation["passed"] else 1)
 
 
 if __name__ == "__main__":
