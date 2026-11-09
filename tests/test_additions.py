@@ -633,3 +633,10 @@ def test_only_a_single_dated_article_page_counts_as_activity() -> None:
     assert not _is_article_page({"url": "https://a.no/blogg/", "stated_dates": ["2026-01-02"]})  # top-level section page
     assert not _is_article_page({"url": "https://a.no/blogs/nyheter", "stated_dates": ["2026-01-02", "2026-02-02"]})  # a listing: the dates belong to its items
     assert _is_product_code("750P201T127") and not _is_product_code("Design Dialogues") and not _is_product_code("Nyhet 2026")
+
+
+def test_a_description_that_only_repeats_the_name_is_not_published() -> None:
+    from norway_company_agent.claims import _only_repeats_name
+    assert _only_repeats_name("Skjetten Legesenter", "SKJETTEN LEGESENTER AS")
+    assert _only_repeats_name("CreationFlow", "CREATIONFLOW AS")
+    assert not _only_repeats_name("Skjetten Legesenter tilbyr fastlege", "SKJETTEN LEGESENTER AS")

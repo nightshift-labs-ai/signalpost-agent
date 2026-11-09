@@ -122,7 +122,7 @@ def build_claims(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], list[di
         claims.append(_claim("official_website", site.get("final_url"), "available", assessment.get("score"), ["ev-website", *proof_ids], identity_method=assessment.get("method"), identity_reasons=assessment.get("reasons"), discovery=site.get("discovery"), org_number_found_at=site.get("org_number_found_at")))
         brand_names = [name.strip() for name in _structured_names(site.get("structured_organisations") or []) if name and name.strip()]
         claims.append(_claim("public_brand", brand_names[0][:120] if brand_names else None, "available" if brand_names else "not_available", CONFIDENCE["site"] if brand_names else None, ["ev-website"]))
-        if site.get("description") and not BOILERPLATE.search(str(site["description"])):
+        if site.get("description") and not BOILERPLATE.search(str(site["description"])) and not _only_repeats_name(site["description"], profile.get("name")):
             claims.append(_claim("self_description", site["description"], "available", CONFIDENCE["site"], ["ev-website"], source_note="company-owned promotional text, not independent"))
         found = {item["platform"]: item["url"] for item in site.get("social_links") or []}
         for platform in PLATFORMS:
@@ -188,6 +188,13 @@ def _money(value: Any, currency: Any) -> str:
     except (TypeError, ValueError):
         return str(value)
     return f"{amount:,.0f} {currency or ''}".strip()
+
+
+def _only_repeats_name(description: Any, name: Any) -> bool:
+    """A description that is just the company's name says nothing about what it does."""
+    words = lambda text: set(re.findall(r"[^\W_]+", str(text or "").casefold())) - {"as", "asa", "ans", "da", "ba", "sa"}
+    described = words(description)
+    return bool(described) and described <= words(name)
 
 
 def _is_article_page(page: dict[str, Any]) -> bool:
