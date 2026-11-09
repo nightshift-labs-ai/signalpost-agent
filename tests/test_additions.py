@@ -640,3 +640,12 @@ def test_a_description_that_only_repeats_the_name_is_not_published() -> None:
     assert _only_repeats_name("Skjetten Legesenter", "SKJETTEN LEGESENTER AS")
     assert _only_repeats_name("CreationFlow", "CREATIONFLOW AS")
     assert not _only_repeats_name("Skjetten Legesenter tilbyr fastlege", "SKJETTEN LEGESENTER AS")
+
+
+def test_redirect_to_a_sister_company_is_not_this_companys_site() -> None:
+    def fetched(domain: str) -> tuple[dict, dict]:
+        return {"status": "available", "value": {"final_url": "https://www.vingruppen.no/strom", "title": "Vingruppen | Strom AS", "description": "", "main_text_excerpt": "Vinhandler siden 1921. Strom AS har importert vin. " * 6, "pages": [], "social_links": [], "registered_address_found_at": "https://www.vingruppen.no/strom"}}, {"requests": 1, "bytes": 10, "latencies_ms": [5]}
+
+    profile = {"organisation_number": ORG, "name": "PREMIUM WINES AS", "evidence": {}}
+    found, _ = discover(profile, None, fetch=fetched, dns=lambda domain: domain == "premiumwines.no")
+    assert found is None
